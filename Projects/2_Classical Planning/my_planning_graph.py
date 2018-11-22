@@ -20,15 +20,8 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        print(type(actionA))
-        potential_clashes = self.children[actionA] ^ self.children[actionB]
-        print(potential_clashes)
-        while potential_clashes:
-            clash = potential_clashes.pop()
-            if ~clash in potential_clashes:
-                return True
-
-        return False
+        return any(~effectA in self.children[actionB] - self.children[actionA]
+                   for effectA in self.children[actionA] - self.children[actionB])
 
 
     def _interference(self, actionA, actionB):
@@ -42,9 +35,9 @@ class ActionLayer(BaseActionLayer):
         --------
         layers.ActionNode
         """
-        # TODO: implement this function
-        return any(~effect in self.parents[actionA] for effect in self.children[actionB]) or \
-               any(~effect in self.parents[actionB] for effect in self.children[actionA])
+        # DONE: implement this function
+        return any(~effectB in self.parents[actionA] for effectB in self.children[actionB]) or \
+               any(~effectA in self.parents[actionB] for effectA in self.children[actionA])
 
     def _competing_needs(self, actionA, actionB):
         """ Return True if any preconditions of the two actions are pairwise mutex in the parent layer
@@ -58,13 +51,10 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         layers.BaseLayer.parent_layer
         """
-        # TODO: implement this function
-        for A_precond in self.parents[actionA]:
-            for B_precond in self.parents[actionB]:
-                if self.parent_layer.is_mutex(A_precond, B_precond):
-                    return True
-
-        return False
+        # DONE: implement this function
+        return any(self.parent_layer.is_mutex(precondA, precondB)
+                   for precondB in self.parents[actionB] - self.parents[actionA]
+                   for precondA in self.parents[actionA] - self.parents[actionB])
 
 
 class LiteralLayer(BaseLiteralLayer):
@@ -80,17 +70,14 @@ class LiteralLayer(BaseLiteralLayer):
         --------
         layers.BaseLayer.parent_layer
         """
-        # TODO: implement this function
-        for A_cause in self.parents[literalA]:
-            for B_cause in self.parents[literalB]:
-                if not self.parent_layer.is_mutex(A_cause, B_cause):
-                    return False
-
-        return True
+        # DONE: implement this function
+        return all(self.parent_layer.is_mutex(causeA, causeB)
+                   for causeB in self.parents[literalB] - self.parents[literalA]
+                   for causeA in self.parents[literalA] - self.parents[literalB])
 
     def _negation(self, literalA, literalB):
         """ Return True if two literals are negations of each other """
-        # TODO: implement this function
+        # DONE: implement this function
         return literalA == ~literalB
 
 
