@@ -116,6 +116,19 @@ class PlanningGraph:
         self.literal_layers = [layer]
         self.action_layers = []
 
+    # TODO: document, add option to extend graph if not levelled and goals not found
+    def _level_costs(self, goal):
+        fluents = set(goal) #Defensive copy
+        level_costs = []
+        for level_cost, literal_layer in enumerate(self.literal_layers):
+            for fact in literal_layer:
+                if fact in fluents:
+                    level_costs.append(level_cost)
+                    fluents.remove(fact)
+                    if not fluents:
+                        return level_costs
+        raise Exception("Planning graph doesn't contain a possible solution for any of the individual goals: %s" % fluents)
+
     def h_levelsum(self):
         """ Calculate the level sum heuristic for the planning graph
 
@@ -142,7 +155,8 @@ class PlanningGraph:
         Russell-Norvig 10.3.1 (3rd Edition)
         """
         # TODO: implement this function
-        raise NotImplementedError
+        self.fill()
+        return sum(self._level_costs(self.goal))
 
     def h_maxlevel(self):
         """ Calculate the max level heuristic for the planning graph
@@ -172,7 +186,8 @@ class PlanningGraph:
         WARNING: you should expect long runtimes using this heuristic with A*
         """
         # TODO: implement maxlevel heuristic
-        raise NotImplementedError
+        self.fill()
+        return max(self._level_costs(self.goal))
 
     def h_setlevel(self):
         """ Calculate the set level heuristic for the planning graph
@@ -197,7 +212,19 @@ class PlanningGraph:
         WARNING: you should expect long runtimes using this heuristic on complex problems
         """
         # TODO: implement setlevel heuristic
-        raise NotImplementedError
+        self.fill()
+        for level_cost, literal_layer in enumerate(self.literal_layers):
+            non_mutex_goal_count = 0
+            for fact in literal_layer:
+                if fact in self.goal:
+                    if any(literal_layer.is_mutex(fact, other_goal) for other_goal in self.goal):
+                        break
+                    non_mutex_goal_count += 1
+                    if non_mutex_goal_count == len(self.goal):
+                        return level_cost
+        print("Is levelled: {}  Number of Fact Levels: {}  Number of Action Levels: {}".format(self._is_leveled, len(self.literal_layers), len(self.action_layers)))
+        for fact in self.literal_layers[-1]: print(fact, "[", self.literal_layers[-1]._mutexes[fact])
+        raise Exception("Planning graph doesn't contain a possible solution for the set of goals: %s" % self.goal)
 
     ##############################################################################
     #                     DO NOT MODIFY CODE BELOW THIS LINE                     #
