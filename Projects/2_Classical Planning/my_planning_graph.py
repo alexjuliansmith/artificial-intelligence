@@ -20,8 +20,9 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        return any(~effectA in self.children[actionB] - self.children[actionA]
-                   for effectA in self.children[actionA] - self.children[actionB])
+        effects_A, effects_B = self.children[actionA], self.children[actionB] - self.children[actionA]
+
+        return any(~effectB in effects_A for effectB in effects_B)
 
 
     def _interference(self, actionA, actionB):
@@ -36,8 +37,11 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        return any(~effectB in self.parents[actionA] for effectB in self.children[actionB]) or \
-               any(~effectA in self.parents[actionB] for effectA in self.children[actionA])
+        effects_A, effects_B = self.children[actionA], self.children[actionB]
+
+        return any(~precondA in effects_B for precondA in self.parents[actionA]) \
+            or any(~precondB in effects_A for precondB in self.parents[actionB])
+
 
     def _competing_needs(self, actionA, actionB):
         """ Return True if any preconditions of the two actions are pairwise mutex in the parent layer
@@ -52,9 +56,9 @@ class ActionLayer(BaseActionLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        return any(self.parent_layer.is_mutex(precondA, precondB)
-                   for precondB in self.parents[actionB] - self.parents[actionA]
-                   for precondA in self.parents[actionA] - self.parents[actionB])
+        preconds_A, preconds_B = self.parents[actionA], self.parents[actionB] - self.parents[actionA]
+
+        return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
 
 
 class LiteralLayer(BaseLiteralLayer):
@@ -71,9 +75,9 @@ class LiteralLayer(BaseLiteralLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        return all(self.parent_layer.is_mutex(causeA, causeB)
-                   for causeB in self.parents[literalB] - self.parents[literalA]
-                   for causeA in self.parents[literalA] - self.parents[literalB])
+        causes_A, causes_B = self.parents[literalA], self.parents[literalB]
+
+        return not(causes_A & causes_B) and all(causes_A <= self.parent_layer._mutexes[causeB] for causeB in causes_B)
 
     def _negation(self, literalA, literalB):
         """ Return True if two literals are negations of each other """
@@ -86,6 +90,8 @@ class PlanningGraph:
         """
         Parameters
         ----------
+
+
         problem : PlanningProblem
             An instance of the PlanningProblem class
 
@@ -116,18 +122,18 @@ class PlanningGraph:
         self.literal_layers = [layer]
         self.action_layers = []
 
-    # TODO: document, add option to extend graph if not levelled and goals not found
+    # TODO: document, add option to extend graph if not levelled and goals not found; iterate goal not layer
     def _level_costs(self, goal):
-        fluents = set(goal) #Defensive copy
+        goals_remaining = set(goal)
         level_costs = []
         for level_cost, literal_layer in enumerate(self.literal_layers):
             for fact in literal_layer:
-                if fact in fluents:
+                if fact in goals_remaining:
                     level_costs.append(level_cost)
-                    fluents.remove(fact)
-                    if not fluents:
+                    goals_remaining.remove(fact)
+                    if not goals_remaining:
                         return level_costs
-        raise Exception("Planning graph doesn't contain a possible solution for any of the individual goals: %s" % fluents)
+        raise Exception("Planning graph doesn't contain a possible solution for any of the individual goals: %s" % goals_remaining)
 
     def h_levelsum(self):
         """ Calculate the level sum heuristic for the planning graph
@@ -212,6 +218,7 @@ class PlanningGraph:
         WARNING: you should expect long runtimes using this heuristic on complex problems
         """
         # TODO: implement setlevel heuristic
+        '''
         self.fill()
         for level_cost, literal_layer in enumerate(self.literal_layers):
             non_mutex_goal_count = 0
@@ -225,6 +232,20 @@ class PlanningGraph:
         print("Is levelled: {}  Number of Fact Levels: {}  Number of Action Levels: {}".format(self._is_leveled, len(self.literal_layers), len(self.action_layers)))
         for fact in self.literal_layers[-1]: print(fact, "[", self.literal_layers[-1]._mutexes[fact])
         raise Exception("Planning graph doesn't contain a possible solution for the set of goals: %s" % self.goal)
+        '''
+        self.fill()
+        for level_cost, literal_layer in enumerate(self.literal_layers):
+            if not all(fact in literal_layer for fact in self.goal):
+                continue
+            if not any(literal_layer.is_mutex(goalA, goalB) for goalA in self.goal for goalB in self.goal):
+                return level_cost
+        '''Debug
+        print("Is levelled: {}  Number of Fact Levels: {}  Number of Action Levels: {}".format(self._is_leveled, len(self.literal_layers), len(self.action_layers)))
+        for fact in self.literal_layers[-1]: print(fact, self.literal_layers[-1]._mutexes[fact])
+        for action in self.action_layers[-1]: print(action, self.action_layers[-1]._mutexes[action])
+        '''
+        raise Exception("Planning graph doesn't contain a possible solution for the set of goals: %s" % self.goal)
+
 
     ##############################################################################
     #                     DO NOT MODIFY CODE BELOW THIS LINE                     #
