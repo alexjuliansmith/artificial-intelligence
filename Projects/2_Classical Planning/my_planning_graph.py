@@ -6,6 +6,21 @@ from aimacode.utils import expr
 
 from layers import BaseActionLayer, BaseLiteralLayer, makeNoOp, make_node
 
+@lru_cache()
+def _interference(actionA, actionB):
+    """ Return True if the effects of either action negate the preconditions of the other
+
+    See Also
+    --------
+    layers.ActionNode
+    """
+
+    return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
+           or any(~precondB in actionA.effects for precondB in actionB.preconditions)
+
+@lru_cache()
+def _inconsistent_effects(actionA, actionB):
+    return any(~effectA in actionB.effects for effectA in actionA.effects)
 
 class ActionLayer(BaseActionLayer):
 
@@ -21,9 +36,10 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        effects_A, effects_B = self.children[actionA], self.children[actionB] - self.children[actionA]
+        #effects_A, effects_B = self.children[actionA], self.children[actionB] - self.children[actionA]
 
-        return any(~effectB in effects_A for effectB in effects_B)
+        #return any(~effectB in effects_A for effectB in effects_B)
+        return _inconsistent_effects(actionA, actionB)
 
 
     def _interference(self, actionA, actionB):
@@ -38,11 +54,12 @@ class ActionLayer(BaseActionLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        effects_A, effects_B = self.children[actionA], self.children[actionB]
+        #effects_A, effects_B = self.children[actionA], self.children[actionB]
 
-        return any(~precondA in effects_B for precondA in self.parents[actionA]) \
-            or any(~precondB in effects_A for precondB in self.parents[actionB])
+        #return any(~precondA in effects_B for precondA in self.parents[actionA]) \
+        #    or any(~precondB in effects_A for precondB in self.parents[actionB])
 
+        return _interference(actionA, actionB)
 
     def _competing_needs(self, actionA, actionB):
         """ Return True if any preconditions of the two actions are pairwise mutex in the parent layer
@@ -61,6 +78,9 @@ class ActionLayer(BaseActionLayer):
 
         return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
 
+@lru_cache(2000)
+def _negation(literalA, literalB):
+    return literalA == ~literalB
 
 class LiteralLayer(BaseLiteralLayer):
 
@@ -80,10 +100,11 @@ class LiteralLayer(BaseLiteralLayer):
 
         return not(causes_A & causes_B) and all(causes_A <= self.parent_layer._mutexes[causeB] for causeB in causes_B)
 
+
     def _negation(self, literalA, literalB):
         """ Return True if two literals are negations of each other """
         # DONE: implement this function
-        return literalA == ~literalB
+        return _negation(literalA, literalB)
 
 
 class PlanningGraph:
@@ -123,7 +144,7 @@ class PlanningGraph:
         self.literal_layers = [layer]
         self.action_layers = []
 
-    # TODO: document
+
     @lru_cache()
     def _level_costs(self):
         '''
