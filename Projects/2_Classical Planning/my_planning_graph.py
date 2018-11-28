@@ -4,8 +4,13 @@ from functools import lru_cache
 from aimacode.planning import Action
 from aimacode.utils import expr
 
-from layers import BaseActionLayer, BaseLiteralLayer, makeNoOp, make_node
+from layers import BaseActionLayer, BaseLiteralLayer, makeNoOp, make_FastActionNode
 
+#################################
+
+make_node = make_FastActionNode
+
+##################################
 @lru_cache()
 def _interference(actionA, actionB):
     """ Return True if the effects of either action negate the preconditions of the other
@@ -15,12 +20,11 @@ def _interference(actionA, actionB):
     layers.ActionNode
     """
 
-    return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
-           or any(~precondB in actionA.effects for precondB in actionB.preconditions)
+    return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
 
 @lru_cache()
 def _inconsistent_effects(actionA, actionB):
-    return any(~effectA in actionB.effects for effectA in actionA.effects)
+    return actionA.effects & actionB.negated_effects
 
 class ActionLayer(BaseActionLayer):
 
