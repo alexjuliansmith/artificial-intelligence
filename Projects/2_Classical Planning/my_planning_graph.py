@@ -3,8 +3,8 @@ from itertools import chain, combinations
 from functools import lru_cache
 from aimacode.planning import Action
 from aimacode.utils import expr
-
-from layers import BaseActionLayer, BaseLiteralLayer, makeNoOp, make_FastActionNode
+from collections import defaultdict
+from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_FastActionNode
 
 #################################
 
@@ -26,7 +26,57 @@ def _interference(actionA, actionB):
 def _inconsistent_effects(actionA, actionB):
     return actionA.effects & actionB.negated_effects
 
-class ActionLayer(BaseActionLayer):
+class ActionLayer(BaseLayer):
+
+    def __init__(self, actions=[], parent_layer=None, serialize=True, ignore_mutexes=False):
+        super().__init__(actions, parent_layer, ignore_mutexes)
+        self._serialize=serialize
+        try:
+            self._static_mutexes = actions._static_mutexes
+        except:
+            self._static_mutexes = defaultdict(set)
+        #temp monitoring
+        self.cache_tries = self.cache_misses = 0
+
+        try:
+            self.level = actions.level + 1
+            static_size = sum(len(ms) for ms in self._static_mutexes.values()) / 2
+            dynamic_size = sum(len(ms) for ms in actions._mutexes.values()) / 2
+            print("Level: {} Last Cache Tries: {}  Misses: {}    Size: {}/{}  Last Layer Dynamic Mutex Size {}/{}".format(self.level, actions.cache_tries, actions.cache_misses, len(self._static_mutexes), static_size, len(actions._mutexes), dynamic_size))
+            if self.level == 5:
+                print("Static Mutexes: {}".format(self._static_mutexes))
+                print("Dynamic Mutexes: {}".format(actions._mutexes))
+        except:
+            self.level = 0
+
+    def is_mutex(self, actionA, actionB):
+        return actionA in self._static_mutexes[actionB] or actionA in self._mutexes[actionB]
+
+    def set_static_mutex(self, itemA, itemB):
+        self._static_mutexes[itemA].add(itemB)
+        self._static_mutexes[itemB].add(itemA)
+
+    def update_mutexes(self):
+
+        for actionA, actionB in combinations(iter(self), 2):
+                self.cache_tries += 1
+                if not actionA in self._static_mutexes[actionB]:
+                    self.cache_misses += 1
+                    if self._serialize and actionA.no_op == actionB.no_op == False:
+                        self.set_static_mutex(actionA, actionB)
+                    elif (self._inconsistent_effects(actionA, actionB)
+                          or self._interference(actionA, actionB)):
+                        self.set_static_mutex(actionA, actionB)
+                    elif self._ignore_mutexes:
+                        continue
+                    elif self._competing_needs(actionA, actionB):
+                        self.set_mutex(actionA, actionB)
+
+    def add_inbound_edges(self, action, literals):
+        pass
+
+    def add_outbound_edges(self, action, literals):
+        pass
 
     def _inconsistent_effects(self, actionA, actionB):
         """ Return True if an effect of one action negates an effect of the other
@@ -78,9 +128,11 @@ class ActionLayer(BaseActionLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        preconds_A, preconds_B = self.parents[actionA], self.parents[actionB] - self.parents[actionA]
+        #preconds_A, preconds_B = self.parents[actionA], self.parents[actionB] - self.parents[actionA]
+        preconds_A, preconds_B = actionA.preconditions, actionB.preconditions
 
         return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
+
 
 @lru_cache(2000)
 def _negation(literalA, literalB):
@@ -102,7 +154,7 @@ class LiteralLayer(BaseLiteralLayer):
         # DONE: implement this function
         causes_A, causes_B = self.parents[literalA], self.parents[literalB]
 
-        return not(causes_A & causes_B) and all(causes_A <= self.parent_layer._mutexes[causeB] for causeB in causes_B)
+        return not(causes_A & causes_B) and not any(causes_A - self.parent_layer._mutexes[causeB] - self.parent_layer._static_mutexes[causeB] for causeB in causes_B)
 
 
     def _negation(self, literalA, literalB):
@@ -311,10 +363,10 @@ class PlanningGraph:
 
                 # add two-way edges in the graph connecting the parent layer with the new action
                 parent_literals.add_outbound_edges(action, action.preconditions)
-                action_layer.add_inbound_edges(action, action.preconditions)
+                #action_layer.add_inbound_edges(action, action.preconditions)
 
                 # # add two-way edges in the graph connecting the new literaly layer with the new action
-                action_layer.add_outbound_edges(action, action.effects)
+                #action_layer.add_outbound_edges(action, action.effects)
                 literal_layer.add_inbound_edges(action, action.effects)
 
         action_layer.update_mutexes()
