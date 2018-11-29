@@ -15,16 +15,6 @@ from my_planning_graph import PlanningGraph, LiteralLayer, ActionLayer
 from layers import makeNoOp, make_node
 
 
-#####################################################################################
-#TODO remove
-# Temporary synonyms to make tests use faster methods
-from layers import make_FastActionNode
-
-make_node = make_FastActionNode
-
-
-#####################################################################################
-
 def chain_dedent(str, *args, **kwargs):
     return textwrap.dedent(str.format(*args, **kwargs)).replace("\n", " ")
 

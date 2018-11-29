@@ -4,7 +4,7 @@ from functools import lru_cache
 from aimacode.planning import Action
 from aimacode.utils import Expr
 from collections import defaultdict
-from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_FastActionNode
+from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
 
 
 #################################
@@ -28,24 +28,57 @@ class FastLiteralNode(Expr):
 def make_FastLiteralNode(literal: Expr):
     return FastLiteralNode(literal.op, *literal.args)
 
+class FastActionNode(ActionNode):
+    __slots__ = ['negated_preconditions', 'negated_effects']
+    def __init__(self, symbol, preconditions, negated_preconditions, effects, negated_effects, no_op):
+        super().__init__(symbol, preconditions, effects, no_op)
+        self.negated_preconditions = negated_preconditions
+        self.negated_effects = negated_effects
+
+'''
+@lru_cache()  TODO: remove
+def make_FastActionNode(action: ActionNode):
+    negated_preconditions = set([~p for p in action.preconditions])
+    negated_effects = set([~e for e in action.effects])
+    return FastActionNode(action.expr, action.preconditions, frozenset(negated_preconditions), action.effects, frozenset(negated_effects), action.no_op)
+'''
+@lru_cache()
+def make_FastActionNode(action, no_op=False):
+    preconditions = frozenset(action.precond_pos) | set([~p for p in action.precond_neg])  #TODO somewhere use FastLiterals
+    effects = frozenset(action.effect_add) | set([~e for e in action.effect_rem])
+
+    negated_preconditions = set([~p for p in preconditions])
+    negated_effects = set([~e for e in effects])
+    return FastActionNode(str(action), preconditions, frozenset(negated_preconditions), effects, frozenset(negated_effects), no_op)
+
 ##################################
+
 make_node = make_FastActionNode
 
-
 ##################################
-@lru_cache()
-def _interference(actionA, actionB):
-    """ Return True if the effects of either action negate the preconditions of the other
-    Factored outside class to enable caching across ActionLayer instances
-    """
-    return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
-
 @lru_cache()
 def _inconsistent_effects(actionA, actionB):
     """ Return True if an effect of one action negates an effect of the other
     Factored outside class to enable caching across ActionLayer instances
     """
-    return actionA.effects & actionB.negated_effects
+    try:
+        return actionA.effects & actionB.negated_effects
+    except:
+        # This branch necessary to pass some Test_1_InconsistentEffectsMutex unittests which build their own ActionNode
+        return any(~effectB in actionA.effects for effectB in actionB.effects)
+
+@lru_cache()
+def _interference(actionA: ActionNode, actionB: ActionNode):
+    """ Return True if the effects of either action negate the preconditions of the other
+    Factored outside class to enable caching across ActionLayer instances
+    """
+    try:
+        return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
+    except:
+        # This branch necessary to pass some Test_2_InterferenceMutex unittests which build their own ActionNode
+        return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
+            or any(~precondB in actionA.effects for precondB in actionB.preconditions)
+
 
 class ActionLayer(BaseLayer):
 
@@ -57,7 +90,7 @@ class ActionLayer(BaseLayer):
         except:
             self._static_mutexes = defaultdict(set)
         #temp monitoring
-        '''
+        ''' TODO remove - DEBUG lgging
         self.cache_tries = self.cache_misses = 0
         
         try:
@@ -71,6 +104,12 @@ class ActionLayer(BaseLayer):
         except:
             self.level = 0
         '''
+
+    def add(self, action):
+        #TODO document, track new, remove warning
+        if False and not isinstance(action, FastActionNode):
+            raise Warning("Standard Action Node used in PG")
+        super().add(action)
 
     def is_mutex(self, actionA, actionB):
         return actionA in self._static_mutexes[actionB] or actionA in self._mutexes[actionB]
@@ -213,6 +252,7 @@ class PlanningGraph:
         self.goal = set(problem.goal)
 
         # make no-op actions that persist every literal to the next layer
+        #TODO these have been changed from original; include originals as comments
         no_ops = [make_node(n, no_op=True) for n in chain(*(makeNoOp(s) for s in problem.state_map))]
         self._actionNodes = no_ops + [make_node(a) for a in problem.actions_list]
         

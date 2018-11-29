@@ -11,12 +11,7 @@ from aimacode.utils import expr, Expr
     #                 YOU DO NOT NEED TO MODIFY CODE IN THIS FILE                #
     ##############################################################################
 
-###############################################################################################
 
-
-
-
-###############################################################################################
 @lru_cache()
 def make_node(action, no_op=False):
     """ Convert Action objects to planning graph nodes by creating distinct
@@ -24,8 +19,6 @@ def make_node(action, no_op=False):
     negative preconditions and effects into sets. This allows efficient membership
     testing and perserves logical negation semantics on the symbolic actions.
     """
-    #TODO Remove - Just to prove its never used
-    assert False, "make_node should never be called, used make_FastActionNode"
     preconditions = set(action.precond_pos) | set([~p for p in action.precond_neg])
     effects = set(action.effect_add) | set([~e for e in action.effect_rem])
     return ActionNode(str(action), frozenset(preconditions), frozenset(effects), no_op)
@@ -72,7 +65,6 @@ class ActionNode(object):
     """
     __slots__ = ['expr', 'preconditions', 'effects', 'no_op', '__hash']
     def __init__(self, symbol, preconditions, effects, no_op):
-        #TODO remove print('A', end ="")
         self.expr = symbol
         self.preconditions = preconditions
         self.effects = effects
@@ -86,20 +78,6 @@ class ActionNode(object):
         return (isinstance(other, ActionNode)
             and self.expr == other.expr)
 
-class FastActionNode(ActionNode):
-    __slots__ = ['negated_preconditions', 'negated_effects']
-    def __init__(self, symbol, preconditions, negated_preconditions, effects, negated_effects, no_op):
-        super().__init__(symbol, preconditions, effects, no_op)
-        self.negated_preconditions = negated_preconditions
-        self.negated_effects = negated_effects
-
-@lru_cache()
-def make_FastActionNode(action: Action, no_op=False):
-    preconditions = set(action.precond_pos) | set([~p for p in action.precond_neg])
-    effects = set(action.effect_add) | set([~e for e in action.effect_rem])
-    negated_preconditions = set(action.precond_neg) | set([~p for p in action.precond_pos])
-    negated_effects = set(action.effect_rem) | set([~e for e in action.effect_add])
-    return FastActionNode(str(action), frozenset(preconditions), frozenset(negated_preconditions), frozenset(effects), frozenset(negated_effects), no_op)
 
 class BaseLayer(MutableSet):
     """ Base class for ActionLayer and LiteralLayer classes for planning graphs
