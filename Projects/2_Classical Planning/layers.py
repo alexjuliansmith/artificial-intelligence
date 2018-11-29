@@ -72,6 +72,7 @@ class ActionNode(object):
     """
     __slots__ = ['expr', 'preconditions', 'effects', 'no_op', '__hash']
     def __init__(self, symbol, preconditions, effects, no_op):
+        #TODO remove print('A', end ="")
         self.expr = symbol
         self.preconditions = preconditions
         self.effects = effects

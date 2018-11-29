@@ -148,6 +148,8 @@ class Expr(object):
         self.op = op
         self.args = args
         self.__hash = hash(self.op) ^ hash(self.args)
+        #TODO remove
+        #print("EXPR {}:".format(self))
 
     def __eq__(self, other):
         return (isinstance(other, Expr)

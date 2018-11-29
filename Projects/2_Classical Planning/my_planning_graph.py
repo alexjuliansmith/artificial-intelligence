@@ -2,28 +2,49 @@
 from itertools import chain, combinations
 from functools import lru_cache
 from aimacode.planning import Action
-from aimacode.utils import expr
+from aimacode.utils import Expr
 from collections import defaultdict
 from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_FastActionNode
 
+
 #################################
 
+
+class FastLiteralNode(Expr):
+    __slots__ = ['__negation']
+    def __init__(self, op, *args):
+        super().__init__(op, *args)
+        self.__negation = args[0] if '~' == op else Expr('~', self)
+        #TODO remove print(self.make_string(), end=" ")
+
+    def __invert__(self):
+        return self.__negation
+
+    # TEMP debugging TODO remove
+    def make_string(self):
+        return self.__repr__() + "/{}".format(self.__negation.__repr__())
+
+@lru_cache()
+def make_FastLiteralNode(literal: Expr):
+    return FastLiteralNode(literal.op, *literal.args)
+
+##################################
 make_node = make_FastActionNode
+
 
 ##################################
 @lru_cache()
 def _interference(actionA, actionB):
     """ Return True if the effects of either action negate the preconditions of the other
-
-    See Also
-    --------
-    layers.ActionNode
+    Factored outside class to enable caching across ActionLayer instances
     """
-
     return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
 
 @lru_cache()
 def _inconsistent_effects(actionA, actionB):
+    """ Return True if an effect of one action negates an effect of the other
+    Factored outside class to enable caching across ActionLayer instances
+    """
     return actionA.effects & actionB.negated_effects
 
 class ActionLayer(BaseLayer):
@@ -36,8 +57,9 @@ class ActionLayer(BaseLayer):
         except:
             self._static_mutexes = defaultdict(set)
         #temp monitoring
+        '''
         self.cache_tries = self.cache_misses = 0
-
+        
         try:
             self.level = actions.level + 1
             static_size = sum(len(ms) for ms in self._static_mutexes.values()) / 2
@@ -48,6 +70,7 @@ class ActionLayer(BaseLayer):
                 print("Dynamic Mutexes: {}".format(actions._mutexes))
         except:
             self.level = 0
+        '''
 
     def is_mutex(self, actionA, actionB):
         return actionA in self._static_mutexes[actionB] or actionA in self._mutexes[actionB]
@@ -59,9 +82,9 @@ class ActionLayer(BaseLayer):
     def update_mutexes(self):
 
         for actionA, actionB in combinations(iter(self), 2):
-                self.cache_tries += 1
+                #self.cache_tries += 1
                 if not actionA in self._static_mutexes[actionB]:
-                    self.cache_misses += 1
+                    #self.cache_misses += 1
                     if self._serialize and actionA.no_op == actionB.no_op == False:
                         self.set_static_mutex(actionA, actionB)
                     elif (self._inconsistent_effects(actionA, actionB)
@@ -90,9 +113,6 @@ class ActionLayer(BaseLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        #effects_A, effects_B = self.children[actionA], self.children[actionB] - self.children[actionA]
-
-        #return any(~effectB in effects_A for effectB in effects_B)
         return _inconsistent_effects(actionA, actionB)
 
 
@@ -108,11 +128,6 @@ class ActionLayer(BaseLayer):
         layers.ActionNode
         """
         # DONE: implement this function
-        #effects_A, effects_B = self.children[actionA], self.children[actionB]
-
-        #return any(~precondA in effects_B for precondA in self.parents[actionA]) \
-        #    or any(~precondB in effects_A for precondB in self.parents[actionB])
-
         return _interference(actionA, actionB)
 
     def _competing_needs(self, actionA, actionB):
@@ -134,7 +149,7 @@ class ActionLayer(BaseLayer):
         return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
 
 
-@lru_cache(2000)
+@lru_cache(2048)
 def _negation(literalA, literalB):
     return literalA == ~literalB
 
@@ -161,6 +176,15 @@ class LiteralLayer(BaseLiteralLayer):
         """ Return True if two literals are negations of each other """
         # DONE: implement this function
         return _negation(literalA, literalB)
+
+################  Add Faster implementation
+    def add(self, literal):
+        #TODO document
+        if isinstance(literal, FastLiteralNode):
+            print("Already Fast!  {}".format(literal))
+        else:
+            literal = make_FastLiteralNode(literal)
+        super().add(literal)
 
 
 class PlanningGraph:
