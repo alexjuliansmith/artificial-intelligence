@@ -46,16 +46,16 @@ def make_FastActionNode(action: ActionNode):
 '''
 @lru_cache()
 def make_FastActionNode(action, no_op=False):
-    preconditions = frozenset( set(make_FastLiteralNode(p) for p in action.precond_pos) |
-                               set(~make_FastLiteralNode(p) for p in action.precond_neg)
+    preconditions = frozenset( {make_FastLiteralNode(p) for p in action.precond_pos} |
+                               {~make_FastLiteralNode(p) for p in action.precond_neg}
                               )
-    effects = frozenset( set(make_FastLiteralNode(e) for e in action.effect_add) |
-                         set(~make_FastLiteralNode(e) for e in action.effect_rem)
+    effects = frozenset( {make_FastLiteralNode(e) for e in action.effect_add} |
+                         {~make_FastLiteralNode(e) for e in action.effect_rem}
                         )
 
-    negated_preconditions = set([~p for p in preconditions])
-    negated_effects = set([~e for e in effects])
-    return FastActionNode(str(action), preconditions, frozenset(negated_preconditions), effects, frozenset(negated_effects), no_op)
+    negated_preconditions = frozenset( {~p for p in preconditions} )
+    negated_effects = frozenset( {~e for e in effects} )
+    return FastActionNode(str(action), preconditions, negated_preconditions, effects, negated_effects, no_op)
 
 ##################################
 
@@ -99,8 +99,8 @@ class ActionLayer(BaseLayer):
         (ideally avoid checking each mutex twice)
         Record stats to see if it helps
         1a)
-        Would be nice to have a
-        Track layer action gets added - make more efficient levelsums check this way - really only useful for regression search (+graphplan?)
+        Would be nice to have
+        Track layer action gets added -  is this useful? perhaps for regression search (+graphplan?)
         2)
         Replace mutex tests from set membership to bitmaps (in conjunction with literal layer)
         3)
@@ -130,7 +130,7 @@ class ActionLayer(BaseLayer):
         '''
 
     def add(self, action: ActionNode):
-        assert True or not isinstance(action, FastActionNode), "Warning: Standard Action Node used in PG" #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard ActionNodes
+        assert True or isinstance(action, FastActionNode), "Warning: Standard Action Node used in PG" #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard ActionNodes
         assert action not in self, "Error: Action can only be added once"
         self._new_actions.add(action)
         super().add(action)
@@ -213,7 +213,9 @@ class ActionLayer(BaseLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        return any(actionA.preconditions & self.parent_layer._mutexes[precondB] for precondB in actionB.preconditions)
+        #return any(actionA.preconditions & self.parent_layer._mutexes[precondB] for precondB in actionB.preconditions)
+        #TODO make more performant
+        return any(self.parent_layer.is_mutex(precondA, precondB) for precondA in actionA.preconditions for precondB in actionB.preconditions)
 
 
 @lru_cache(2048) #TODO remove this - FastLiteralNodes effectively already cache this
@@ -222,6 +224,27 @@ def _negation(literalA, literalB):
 
 class LiteralLayer(BaseLiteralLayer):
 
+    def __init__(self, literals=[], parent_layer=None, ignore_mutexes=False):
+        super().__init__(literals, parent_layer, ignore_mutexes)
+        self._new_literals = set()
+    '''
+        TODO
+        1)
+        o Stop tracking child actions - only parent action links required
+        o Track new literals added in layer (check because literals can be 'added' multiple times as action effects)
+        Recheck existing dynamic mutexes from previous literal layer (if exists) to see if now non mutex and remove
+        (eventually replace this with a property that records when something became non-mutex)
+        o Only check new literals to add to new mutexes (static and dynamic)
+        (ideally avoid checking each mutex twice)
+        Record stats to see if it helps
+        1a)
+        Would be nice to have
+        Track layer literal gets added - make more efficient levelsums check this way - really only useful for regression search (+graphplan?)
+        2)
+        Replace mutex tests from set membership to bitmaps (in conjunction with literal layer)
+        3)
+        Stop
+        '''
     def _inconsistent_support(self, literalA, literalB):
         """ Return True if all ways to achieve both literals are pairwise mutex in the parent layer
 
@@ -247,11 +270,31 @@ class LiteralLayer(BaseLiteralLayer):
 
 ################  Add Faster implementation
     def add(self, literal):
-        #TODO document, track new, remove warning
-        if False and not isinstance(literal, FastLiteralNode):
-            raise Warning("Standard Literal Node used in PG")
+        assert True or isinstance(literal, FastLiteralNode), "Warning: Standard Literal {} used in PG".format(literal) #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard Literals for FakeFluents
+        if literal not in self:
+            self._new_literals.add(literal)
         super().add(literal)
 
+    def add_outbound_edges(self, action, literals):
+        pass
+
+    def is_mutex(self, itemA, itemB):
+        return itemA == ~itemB or itemA in self._mutexes[itemB]
+
+    def update_mutexes(self):
+        if not self._ignore_mutexes:
+            # Recheck all dynamic mutexes from previous literal layer (if there is one), add to this layer if still mutex
+            if self.parent_layer:
+                for literalA in self.parent_layer.parent_layer._mutexes:
+                    for literalB in self.parent_layer.parent_layer._mutexes[literalA]:
+                        if self._inconsistent_support(literalA, literalB):
+                            self.set_mutex(literalA, literalB)
+            # Test literals newly added in this layer against all literals in layer to find any new mutexes
+            for literalA in self._new_literals:
+                for literalB in self:
+                    if literalA != ~literalB:   ## Also self?
+                        if self._inconsistent_support(literalA, literalB):
+                            self.set_mutex(literalA, literalB)
 
 class PlanningGraph:
     def __init__(self, problem, state, serialize=True, ignore_mutexes=False):
@@ -455,10 +498,10 @@ class PlanningGraph:
 
                 # add two-way edges in the graph connecting the parent layer with the new action
                 parent_literals.add_outbound_edges(action, action.preconditions)
-                #action_layer.add_inbound_edges(action, action.preconditions)
+                action_layer.add_inbound_edges(action, action.preconditions)
 
                 # # add two-way edges in the graph connecting the new literaly layer with the new action
-                #action_layer.add_outbound_edges(action, action.effects)
+                action_layer.add_outbound_edges(action, action.effects)
                 literal_layer.add_inbound_edges(action, action.effects)
 
         action_layer.update_mutexes()
