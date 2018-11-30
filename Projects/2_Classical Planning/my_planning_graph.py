@@ -85,12 +85,30 @@ def _interference(actionA: ActionNode, actionB: ActionNode):
         return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
             or any(~precondB in actionA.effects for precondB in actionB.preconditions)
 
-
+#TODO document
 class ActionLayer(BaseLayer):
 
     def __init__(self, actions=[], parent_layer=None, serialize=True, ignore_mutexes=False):
+        '''
+        TODO
+        1)
+        o Track new actions added in layer (assert action never added twice)
+        o Recheck existing dynamic mutexes from previous action layer to see if now non mutex and remove (
+        eventually replace this with a property that records when something became non-mutex)
+        o Only check new actions to add to new mutexes (static and dynamic)
+        (ideally avoid checking each mutex twice)
+        Record stats to see if it helps
+        1a)
+        Would be nice to have a
+        Track layer action gets added - make more efficient levelsums check this way - really only useful for regression search (+graphplan?)
+        2)
+        Replace mutex tests from set membership to bitmaps (in conjunction with literal layer)
+        3)
+        Stop recreating dynamic mutex layer, but record when something becomes non mutex (first check compatible with graphplan and regression search)
+        '''
         super().__init__(actions, parent_layer, ignore_mutexes)
         self._serialize=serialize
+        self._new_actions = set()
         try:
             self._static_mutexes = actions._static_mutexes
         except:
@@ -111,10 +129,10 @@ class ActionLayer(BaseLayer):
             self.level = 0
         '''
 
-    def add(self, action):
-        #TODO document, track new, remove warning
-        if False and not isinstance(action, FastActionNode):
-            raise Warning("Standard Action Node used in PG")
+    def add(self, action: ActionNode):
+        assert True or not isinstance(action, FastActionNode), "Warning: Standard Action Node used in PG" #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard ActionNodes
+        assert action not in self, "Error: Action can only be added once"
+        self._new_actions.add(action)
         super().add(action)
 
     def is_mutex(self, actionA, actionB):
@@ -125,8 +143,15 @@ class ActionLayer(BaseLayer):
         self._static_mutexes[itemB].add(itemA)
 
     def update_mutexes(self):
-
-        for actionA, actionB in combinations(iter(self), 2):
+        # Recheck all dynamic mutexes from previous action layer, add to this layer if still mutex
+        if not self._ignore_mutexes:
+            for actionA in self.parent_layer.parent_layer._mutexes:
+                for actionB in self.parent_layer.parent_layer._mutexes[actionA]:
+                    if self._competing_needs(actionA, actionB):
+                        self.set_mutex(actionA, actionB)
+        # Test actions newly added in this layer against all actions in layer to find any new mutexes
+        for actionA in self._new_actions:
+            for actionB in self:
                 #self.cache_tries += 1
                 if not actionA in self._static_mutexes[actionB]:
                     #self.cache_misses += 1
@@ -188,10 +213,7 @@ class ActionLayer(BaseLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        #preconds_A, preconds_B = self.parents[actionA], self.parents[actionB] - self.parents[actionA]
-        preconds_A, preconds_B = actionA.preconditions, actionB.preconditions
-
-        return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
+        return any(actionA.preconditions & self.parent_layer._mutexes[precondB] for precondB in actionB.preconditions)
 
 
 @lru_cache(2048) #TODO remove this - FastLiteralNodes effectively already cache this
