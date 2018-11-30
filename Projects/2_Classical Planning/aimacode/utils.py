@@ -148,8 +148,9 @@ class Expr(object):
         self.op = op
         self.args = args
         self.__hash = hash(self.op) ^ hash(self.args)
-        #TODO remove
+        #TODO remove debugging
         #print("EXPR {}:".format(self))
+        #print('E' if op == '~' else 'e', end="")
 
     def __eq__(self, other):
         return (isinstance(other, Expr)

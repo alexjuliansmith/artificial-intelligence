@@ -14,8 +14,9 @@ class FastLiteralNode(Expr):
     __slots__ = ['__negation']
     def __init__(self, op, *args):
         super().__init__(op, *args)
-        self.__negation = args[0] if '~' == op else Expr('~', self)
-        #TODO remove print(self.make_string(), end=" ")
+        self.__negation = args[0] if '~' == op else FastLiteralNode('~', self)
+        #TODO remove debugging print(self.make_string(), end=" ")
+       # print("L" if op == '~' else 'l', end="")
 
     def __invert__(self):
         return self.__negation
@@ -34,7 +35,8 @@ class FastActionNode(ActionNode):
         super().__init__(symbol, preconditions, effects, no_op)
         self.negated_preconditions = negated_preconditions
         self.negated_effects = negated_effects
-
+        #TODO remove debugging
+        #print("A" if symbol[0] == '~' else 'a', end="")
 '''
 @lru_cache()  TODO: remove
 def make_FastActionNode(action: ActionNode):
@@ -44,8 +46,12 @@ def make_FastActionNode(action: ActionNode):
 '''
 @lru_cache()
 def make_FastActionNode(action, no_op=False):
-    preconditions = frozenset(action.precond_pos) | set([~p for p in action.precond_neg])  #TODO somewhere use FastLiterals
-    effects = frozenset(action.effect_add) | set([~e for e in action.effect_rem])
+    preconditions = frozenset( set(make_FastLiteralNode(p) for p in action.precond_pos) |
+                               set(~make_FastLiteralNode(p) for p in action.precond_neg)
+                              )
+    effects = frozenset( set(make_FastLiteralNode(e) for e in action.effect_add) |
+                         set(~make_FastLiteralNode(e) for e in action.effect_rem)
+                        )
 
     negated_preconditions = set([~p for p in preconditions])
     negated_effects = set([~e for e in effects])
@@ -188,7 +194,7 @@ class ActionLayer(BaseLayer):
         return any(preconds_A & self.parent_layer._mutexes[precondB] for precondB in preconds_B)
 
 
-@lru_cache(2048)
+@lru_cache(2048) #TODO remove this - FastLiteralNodes effectively already cache this
 def _negation(literalA, literalB):
     return literalA == ~literalB
 
@@ -214,15 +220,14 @@ class LiteralLayer(BaseLiteralLayer):
     def _negation(self, literalA, literalB):
         """ Return True if two literals are negations of each other """
         # DONE: implement this function
-        return _negation(literalA, literalB)
+        #return _negation(literalA, literalB) #TODO verify no longer need to cache and remove script method.
+        return literalA == ~literalB
 
 ################  Add Faster implementation
     def add(self, literal):
-        #TODO document
-        if isinstance(literal, FastLiteralNode):
-            print("Already Fast!  {}".format(literal))
-        else:
-            literal = make_FastLiteralNode(literal)
+        #TODO document, track new, remove warning
+        if False and not isinstance(literal, FastLiteralNode):
+            raise Warning("Standard Literal Node used in PG")
         super().add(literal)
 
 
@@ -250,9 +255,10 @@ class PlanningGraph:
         self._is_leveled = False
         self._ignore_mutexes = ignore_mutexes
         self.goal = set(problem.goal)
+        # Seed problem state map with FastLiterals to avoid constant creation of new negative literal instances
+        problem.state_map = [make_FastLiteralNode(literal) for literal in problem.state_map]
 
         # make no-op actions that persist every literal to the next layer
-        #TODO these have been changed from original; include originals as comments
         no_ops = [make_node(n, no_op=True) for n in chain(*(makeNoOp(s) for s in problem.state_map))]
         self._actionNodes = no_ops + [make_node(a) for a in problem.actions_list]
         
