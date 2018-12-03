@@ -10,41 +10,44 @@ from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
 #################################
 
 
+def literal_index(literal, _indexes = {}):
+    try:
+        return _indexes[literal]
+    except KeyError:
+        _indexes[literal] = 1 << len(_indexes)
+        return _indexes[literal]
+
 class FastLiteralNode(Expr):
     __slots__ = ['__negation']
     def __init__(self, op, *args):
         super().__init__(op, *args)
         self.__negation = args[0] if '~' == op else FastLiteralNode('~', self)
-        #TODO remove debugging print(self.make_string(), end=" ")
-       # print("L" if op == '~' else 'l', end="")
 
     def __invert__(self):
         return self.__negation
 
-    # TEMP debugging TODO remove
-    def make_string(self):
-        return self.__repr__() + "/{}".format(self.__negation.__repr__())
-
-@lru_cache()
+@lru_cache(None)
 def make_FastLiteralNode(literal: Expr):
     return FastLiteralNode(literal.op, *literal.args)
 
 class FastActionNode(ActionNode):
-    __slots__ = ['negated_preconditions', 'negated_effects']
+    #todo verify slots all still needed
     def __init__(self, symbol, preconditions, negated_preconditions, effects, negated_effects, no_op):
         super().__init__(symbol, preconditions, effects, no_op)
         self.negated_preconditions = negated_preconditions
         self.negated_effects = negated_effects
-        #TODO remove debugging
-        #print("A" if symbol[0] == '~' else 'a', end="")
-'''
-@lru_cache()  TODO: remove
-def make_FastActionNode(action: ActionNode):
-    negated_preconditions = set([~p for p in action.preconditions])
-    negated_effects = set([~e for e in action.effects])
-    return FastActionNode(action.expr, action.preconditions, frozenset(negated_preconditions), action.effects, frozenset(negated_effects), action.no_op)
-'''
-@lru_cache()
+        self.negated_preconditions_bitmap = self.negated_effects_bitmap = self.preconditions_bitmap = self.effects_bitmap = 0
+        for p in self.preconditions:
+            self.preconditions_bitmap |= literal_index(p)
+        for p in self.negated_preconditions:
+            self.negated_preconditions_bitmap |= literal_index(p)
+        for p in self.effects:
+            self.effects_bitmap |= literal_index(p)
+        for p in self.negated_effects:
+            self.negated_effects_bitmap |= literal_index(p)
+        #TODO remove debugging print ("{} P:{} ~P:{} E:{} ~E{}".format(symbol, self.preconditions_bitmap, self.negated_preconditions_bitmap, self.effects_bitmap, self.negated_effects_bitmap))
+
+@lru_cache(None)
 def make_FastActionNode(action, no_op=False):
     preconditions = frozenset( {make_FastLiteralNode(p) for p in action.precond_pos} |
                                {~make_FastLiteralNode(p) for p in action.precond_neg}
@@ -62,50 +65,36 @@ def make_FastActionNode(action, no_op=False):
 make_node = make_FastActionNode
 
 ##################################
-@lru_cache()
+@lru_cache(None)
 def _inconsistent_effects(actionA, actionB):
     """ Return True if an effect of one action negates an effect of the other
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        return actionA.effects & actionB.negated_effects
-    except:
+        #return actionA.effects & actionB.negated_effects
+        return actionA.effects_bitmap & actionB.negated_effects_bitmap
+    except AttributeError:
         # This branch necessary to pass some Test_1_InconsistentEffectsMutex unittests which build their own ActionNode
         return any(~effectB in actionA.effects for effectB in actionB.effects)
 
-@lru_cache()
+@lru_cache(None)
 def _interference(actionA: ActionNode, actionB: ActionNode):
     """ Return True if the effects of either action negate the preconditions of the other
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
-    except:
+        #return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
+        return actionA.preconditions_bitmap & actionB.negated_effects_bitmap \
+               or actionB.preconditions_bitmap & actionA.negated_effects_bitmap
+    except AttributeError:
         # This branch necessary to pass some Test_2_InterferenceMutex unittests which build their own ActionNode
         return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
             or any(~precondB in actionA.effects for precondB in actionB.preconditions)
 
-#TODO document
+
 class ActionLayer(BaseLayer):
 
     def __init__(self, actions=[], parent_layer=None, serialize=True, ignore_mutexes=False):
-        '''
-        TODO
-        1)
-        o Track new actions added in layer (assert action never added twice)
-        o Recheck existing dynamic mutexes from previous action layer to see if now non mutex and remove (
-        eventually replace this with a property that records when something became non-mutex)
-        o Only check new actions to add to new mutexes (static and dynamic)
-        (ideally avoid checking each mutex twice)
-        Record stats to see if it helps
-        1a)
-        Would be nice to have
-        Track layer action gets added -  is this useful? perhaps for regression search (+graphplan?)
-        2)
-        Replace mutex tests from set membership to bitmaps (in conjunction with literal layer)
-        3)
-        Stop recreating dynamic mutex layer, but record when something becomes non mutex (first check compatible with graphplan and regression search)
-        '''
         super().__init__(actions, parent_layer, ignore_mutexes)
         self._serialize=serialize
         self._new_actions = set()
@@ -113,24 +102,9 @@ class ActionLayer(BaseLayer):
             self._static_mutexes = actions._static_mutexes
         except:
             self._static_mutexes = defaultdict(set)
-        #temp monitoring
-        ''' TODO remove - DEBUG lgging
-        self.cache_tries = self.cache_misses = 0
-        
-        try:
-            self.level = actions.level + 1
-            static_size = sum(len(ms) for ms in self._static_mutexes.values()) / 2
-            dynamic_size = sum(len(ms) for ms in actions._mutexes.values()) / 2
-            print("Level: {} Last Cache Tries: {}  Misses: {}    Size: {}/{}  Last Layer Dynamic Mutex Size {}/{}".format(self.level, actions.cache_tries, actions.cache_misses, len(self._static_mutexes), static_size, len(actions._mutexes), dynamic_size))
-            if self.level == 5:
-                print("Static Mutexes: {}".format(self._static_mutexes))
-                print("Dynamic Mutexes: {}".format(actions._mutexes))
-        except:
-            self.level = 0
-        '''
+
 
     def add(self, action: ActionNode):
-        assert True or isinstance(action, FastActionNode), "Warning: Standard Action Node used in PG" #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard ActionNodes
         assert action not in self, "Error: Action can only be added once"
         self._new_actions.add(action)
         super().add(action)
@@ -143,7 +117,7 @@ class ActionLayer(BaseLayer):
         self._static_mutexes[itemB].add(itemA)
 
     def update_mutexes(self):
-        # Recheck all dynamic mutexes from previous action layer, add to this layer if still mutex
+        # Recheck all temporary mutexes from previous action layer, add to this layer if still mutex
         if not self._ignore_mutexes:
             for actionA in self.parent_layer.parent_layer._mutexes:
                 for actionB in self.parent_layer.parent_layer._mutexes[actionA]:
@@ -152,9 +126,7 @@ class ActionLayer(BaseLayer):
         # Test actions newly added in this layer against all actions in layer to find any new mutexes
         for actionA in self._new_actions:
             for actionB in self:
-                #self.cache_tries += 1
                 if not actionA in self._static_mutexes[actionB]:
-                    #self.cache_misses += 1
                     if self._serialize and actionA.no_op == actionB.no_op == False:
                         self.set_static_mutex(actionA, actionB)
                     elif (self._inconsistent_effects(actionA, actionB)
@@ -213,38 +185,27 @@ class ActionLayer(BaseLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        #return any(actionA.preconditions & self.parent_layer._mutexes[precondB] for precondB in actionB.preconditions)
-        #TODO make more performant
-        return any(self.parent_layer.is_mutex(precondA, precondB) for precondA in actionA.preconditions for precondB in actionB.preconditions)
+        try:
+            actionB_precondition_mutexes = 0
+            for precondB in actionB.preconditions: #TODO cache this
+                actionB_precondition_mutexes |= self.parent_layer._mutexes_bitmap[precondB]
+            return actionA.preconditions_bitmap & actionB_precondition_mutexes
+        except AttributeError:
+            # This branch necessary to pass some Test_4_CompetingNeedsMutex unittests which build their own ActionNode
+            return any(self.parent_layer.is_mutex(precondA, precondB)
+                       for precondA in actionA.preconditions for precondB in actionB.preconditions)
 
-
-@lru_cache(2048) #TODO remove this - FastLiteralNodes effectively already cache this
-def _negation(literalA, literalB):
-    return literalA == ~literalB
 
 class LiteralLayer(BaseLiteralLayer):
 
     def __init__(self, literals=[], parent_layer=None, ignore_mutexes=False):
         super().__init__(literals, parent_layer, ignore_mutexes)
         self._new_literals = set()
-    '''
-        TODO
-        1)
-        o Stop tracking child actions - only parent action links required
-        o Track new literals added in layer (check because literals can be 'added' multiple times as action effects)
-        Recheck existing dynamic mutexes from previous literal layer (if exists) to see if now non mutex and remove
-        (eventually replace this with a property that records when something became non-mutex)
-        o Only check new literals to add to new mutexes (static and dynamic)
-        (ideally avoid checking each mutex twice)
-        Record stats to see if it helps
-        1a)
-        Would be nice to have
-        Track layer literal gets added - make more efficient levelsums check this way - really only useful for regression search (+graphplan?)
-        2)
-        Replace mutex tests from set membership to bitmaps (in conjunction with literal layer)
-        3)
-        Stop
-        '''
+        self._mutexes_bitmap = defaultdict(int)
+        #TODO quick hack to get static mutexes in literal layer
+        for literal in iter(self):
+            self._mutexes_bitmap[literal] = literal_index(~literal)
+
     def _inconsistent_support(self, literalA, literalB):
         """ Return True if all ways to achieve both literals are pairwise mutex in the parent layer
 
@@ -265,21 +226,25 @@ class LiteralLayer(BaseLiteralLayer):
     def _negation(self, literalA, literalB):
         """ Return True if two literals are negations of each other """
         # DONE: implement this function
-        #return _negation(literalA, literalB) #TODO verify no longer need to cache and remove script method.
         return literalA == ~literalB
 
 ################  Add Faster implementation
+
     def add(self, literal):
-        assert True or isinstance(literal, FastLiteralNode), "Warning: Standard Literal {} used in PG".format(literal) #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard Literals for FakeFluents
-        if literal not in self:
+       if literal not in self:
             self._new_literals.add(literal)
-        super().add(literal)
+            super().add(literal)
 
     def add_outbound_edges(self, action, literals):
         pass
 
     def is_mutex(self, itemA, itemB):
         return itemA == ~itemB or itemA in self._mutexes[itemB]
+
+    def set_mutex(self, itemA, itemB):
+        super().set_mutex(itemA, itemB)
+        self._mutexes_bitmap[itemA] |= literal_index(itemB)
+        self._mutexes_bitmap[itemB] |= literal_index(itemA)
 
     def update_mutexes(self):
         if not self._ignore_mutexes:
@@ -292,7 +257,7 @@ class LiteralLayer(BaseLiteralLayer):
             # Test literals newly added in this layer against all literals in layer to find any new mutexes
             for literalA in self._new_literals:
                 for literalB in self:
-                    if literalA != ~literalB:   ## Also self?
+                    if literalA != literalB != ~literalB:
                         if self._inconsistent_support(literalA, literalB):
                             self.set_mutex(literalA, literalB)
 
@@ -336,7 +301,7 @@ class PlanningGraph:
         self.action_layers = []
 
 
-    @lru_cache()
+    @lru_cache(None)
     def _level_costs(self):
         '''
         :return: List of the level cost of each goal (the first level at which each goal appears in the PG)
@@ -416,7 +381,7 @@ class PlanningGraph:
         # DONE: implement maxlevel heuristic
         return max(self._level_costs())
 
-    @lru_cache()
+    @lru_cache(None)
     def h_setlevel(self):
         """ Calculate the set level heuristic for the planning graph
 
