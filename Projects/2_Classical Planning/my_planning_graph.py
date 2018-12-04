@@ -1,12 +1,11 @@
 
 from itertools import chain, combinations
-from functools import lru_cache
+from functools import lru_cache, reduce
 from aimacode.planning import Action
 from aimacode.utils import Expr
 from collections import defaultdict
 from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
-
-
+from operator import or_
 #################################
 
 literal_indexes, action_indexes = [], []
@@ -115,6 +114,7 @@ class ActionLayer(BaseLayer):
         self._serialize=serialize
         self._new_actions = set()
         self._mutex_vector = defaultdict(int)
+        self._preconditions_mutex_vector = {}  # The literals that are mutex with any of an action's preconditions
         try:
             self._static_mutex_vector = actions._static_mutex_vector
             self._mutexes = actions._mutexes
@@ -220,16 +220,20 @@ class ActionLayer(BaseLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        try:
-            actionB_precondition_mutexes = 0
-            for precondB in actionB.preconditions: #TODO cache this
-                actionB_precondition_mutexes |= self.parent_layer._mutex_vector[precondB] #TODO Be careful if literal layer acquires static mutex vector
-            return actionA.preconditions_vector & actionB_precondition_mutexes
-        except AttributeError:
-            # raise AttributeError("Should only occur on test 4")
-            # This branch necessary to pass some Test_4_CompetingNeedsMutex unittests which build their own ActionNode
-            return any(self.parent_layer.is_mutex(precondA, precondB)
-                       for precondA in actionA.preconditions for precondB in actionB.preconditions)
+
+        if isinstance(actionA, FastActionNode):
+            try:
+                actionB_preconditions_mutex_vector =  self._preconditions_mutex_vector[actionB]
+            except KeyError:
+                actionB_preconditions_mutex_vector =  self._preconditions_mutex_vector[actionB] = \
+                    reduce(or_, (self.parent_layer._mutex_vector[p] for p in actionB.preconditions))
+            return actionA.preconditions_vector & actionB_preconditions_mutex_vector
+
+        # raise AttributeError("Should only occur on test 4")
+        # This branch necessary to pass some Test_4_CompetingNeedsMutex unittests which build their own ActionNode
+        return any(self.parent_layer.is_mutex(precondA, precondB)
+                   for precondA in actionA.preconditions for precondB in actionB.preconditions)
+
 
 
 class LiteralLayer(BaseLiteralLayer):
@@ -238,6 +242,8 @@ class LiteralLayer(BaseLiteralLayer):
         super().__init__(literals, parent_layer, ignore_mutexes)
         self._new_literals = set()
         self._mutex_vector = defaultdict(int)
+        self._achievers_vector = {} # The actions which can achieve this fact
+        self._achievers_mutex_vector = {} # The actions which are mutex with all the achievers of this fact
         #TODO quick hack to get static mutexes in literal layer
         for literal in iter(self):
             self._mutex_vector[literal] = literal_index(~literal)
@@ -253,17 +259,24 @@ class LiteralLayer(BaseLiteralLayer):
         --------
         layers.BaseLayer.parent_layer
         """
+        from operator import and_
         # DONE: implement this function
         causes_A, causes_B = self.parents[literalA], self.parents[literalB]
-        #return all(self.parent_layer.is_mutex(causeA, causeB) for causeA in causes_A for causeB in causes_B)
-        #TODO cache vectors in layer
-        causes_A_vector  = 0
-        for causeA in causes_A:
-            causes_A_vector |= causeA.index
-        causes_B_mutex_vector = causes_A_vector
-        for causeB in causes_B:
-            causes_B_mutex_vector &= (self.parent_layer._mutex_vector[causeB] | self.parent_layer._static_mutex_vector[causeB])
-        return causes_B_mutex_vector == causes_A_vector
+        # Implementation is equivalent to:
+        # return all(self.parent_layer.is_mutex(causeA, causeB) for causeA in causes_A for causeB in causes_B)
+        try:
+            literalA_achievers_vector = self._achievers_vector[literalA]
+        except KeyError:
+            literalA_achievers_vector = self._achievers_vector[literalA] = \
+                reduce(or_, (action.index for action in causes_A))
+
+        try:
+            literalB_achievers_mutex_vector = self._achievers_mutex_vector[literalB]
+        except KeyError:
+            literalB_achievers_mutex_vector = self._achievers_mutex_vector[literalB] = \
+                reduce(and_, (self.parent_layer._mutex_vector[action]| self.parent_layer._static_mutex_vector[action]
+                              for action in causes_B))
+        return (literalA_achievers_vector & literalB_achievers_mutex_vector) == literalA_achievers_vector
 
 
     def _negation(self, literalA, literalB):
