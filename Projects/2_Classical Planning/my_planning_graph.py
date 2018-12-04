@@ -9,13 +9,34 @@ from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
 
 #################################
 
+literal_indexes, action_indexes = [], []
 
 def literal_index(literal, _indexes = {}):
     try:
         return _indexes[literal]
     except KeyError:
         _indexes[literal] = 1 << len(_indexes)
+        literal_indexes.append(literal)
         return _indexes[literal]
+
+def action_index(action, _indexes = {}):
+    try:
+        return _indexes[action]
+    except KeyError:
+        _indexes[action] = 1 << len(_indexes)
+        action_indexes.append(action)
+        return _indexes[action]
+
+def list_items(items, item_list):
+    index = 0
+    result = set()
+    while items:
+        if items & 1:
+            result.add(item_list[index])
+        items >>= 1
+        index += 1
+    return result
+
 
 class FastLiteralNode(Expr):
     __slots__ = ['__negation']
@@ -31,34 +52,29 @@ def make_FastLiteralNode(literal: Expr):
     return FastLiteralNode(literal.op, *literal.args)
 
 class FastActionNode(ActionNode):
-    #todo verify slots all still needed
-    def __init__(self, symbol, preconditions, negated_preconditions, effects, negated_effects, no_op):
+    __slots__ = ['index', 'preconditions_vector', 'effects_vector', 'negated_effects_vector']
+    def __init__(self, symbol, preconditions, effects, no_op):
         super().__init__(symbol, preconditions, effects, no_op)
-        self.negated_preconditions = negated_preconditions
-        self.negated_effects = negated_effects
-        self.negated_preconditions_bitmap = self.negated_effects_bitmap = self.preconditions_bitmap = self.effects_bitmap = 0
+        self.index = action_index(self)
+        self.preconditions_vector = self.effects_vector = self.negated_effects_vector = 0
         for p in self.preconditions:
-            self.preconditions_bitmap |= literal_index(p)
-        for p in self.negated_preconditions:
-            self.negated_preconditions_bitmap |= literal_index(p)
-        for p in self.effects:
-            self.effects_bitmap |= literal_index(p)
-        for p in self.negated_effects:
-            self.negated_effects_bitmap |= literal_index(p)
-        #TODO remove debugging print ("{} P:{} ~P:{} E:{} ~E{}".format(symbol, self.preconditions_bitmap, self.negated_preconditions_bitmap, self.effects_bitmap, self.negated_effects_bitmap))
+            self.preconditions_vector |= literal_index(p)
+        for e in self.effects:
+            self.effects_vector |= literal_index(e)
+            self.negated_effects_vector |= literal_index(~e)
+
+    def __lt__(self, other):
+        self.index < other.index
 
 @lru_cache(None)
 def make_FastActionNode(action, no_op=False):
-    preconditions = frozenset( {make_FastLiteralNode(p) for p in action.precond_pos} |
-                               {~make_FastLiteralNode(p) for p in action.precond_neg}
-                              )
-    effects = frozenset( {make_FastLiteralNode(e) for e in action.effect_add} |
-                         {~make_FastLiteralNode(e) for e in action.effect_rem}
-                        )
+    preconditions =  {make_FastLiteralNode(p) for p in action.precond_pos} | \
+                    {~make_FastLiteralNode(p) for p in action.precond_neg}
 
-    negated_preconditions = frozenset( {~p for p in preconditions} )
-    negated_effects = frozenset( {~e for e in effects} )
-    return FastActionNode(str(action), preconditions, negated_preconditions, effects, negated_effects, no_op)
+    effects = {make_FastLiteralNode(e) for e in action.effect_add} | \
+             {~make_FastLiteralNode(e) for e in action.effect_rem}
+
+    return FastActionNode(str(action), frozenset(preconditions), frozenset(effects), no_op)
 
 ##################################
 
@@ -71,9 +87,9 @@ def _inconsistent_effects(actionA, actionB):
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        #return actionA.effects & actionB.negated_effects
-        return actionA.effects_bitmap & actionB.negated_effects_bitmap
+        return actionA.effects_vector & actionB.negated_effects_vector
     except AttributeError:
+        # raise AttributeError("Should only occur on Test 1")
         # This branch necessary to pass some Test_1_InconsistentEffectsMutex unittests which build their own ActionNode
         return any(~effectB in actionA.effects for effectB in actionB.effects)
 
@@ -83,10 +99,10 @@ def _interference(actionA: ActionNode, actionB: ActionNode):
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        #return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
-        return actionA.preconditions_bitmap & actionB.negated_effects_bitmap \
-               or actionB.preconditions_bitmap & actionA.negated_effects_bitmap
+        return actionA.preconditions_vector & actionB.negated_effects_vector \
+            or actionB.preconditions_vector & actionA.negated_effects_vector
     except AttributeError:
+        # raise AttributeError("Should only occur on Test 2")
         # This branch necessary to pass some Test_2_InterferenceMutex unittests which build their own ActionNode
         return any(~precondA in actionB.effects for precondA in actionA.preconditions) \
             or any(~precondB in actionA.effects for precondB in actionB.preconditions)
@@ -98,35 +114,55 @@ class ActionLayer(BaseLayer):
         super().__init__(actions, parent_layer, ignore_mutexes)
         self._serialize=serialize
         self._new_actions = set()
+        self._mutex_vector = defaultdict(int)
         try:
-            self._static_mutexes = actions._static_mutexes
+            self._static_mutex_vector = actions._static_mutex_vector
+            self._mutexes = actions._mutexes
         except:
-            self._static_mutexes = defaultdict(set)
-
+            self._static_mutex_vector = defaultdict(int)
 
     def add(self, action: ActionNode):
         assert action not in self, "Error: Action can only be added once"
         self._new_actions.add(action)
         super().add(action)
 
-    def is_mutex(self, actionA, actionB):
-        return actionA in self._static_mutexes[actionB] or actionA in self._mutexes[actionB]
+    def is_mutex(self, itemA, itemB):
+        return itemA.index & (self._mutex_vector[itemB] | self._static_mutex_vector[itemB])
 
     def set_static_mutex(self, itemA, itemB):
-        self._static_mutexes[itemA].add(itemB)
-        self._static_mutexes[itemB].add(itemA)
+        self._static_mutex_vector[itemA] |= itemB.index
+        self._static_mutex_vector[itemB] |= itemA.index
+
+    def set_mutex_vector(self, itemA, itemB):
+        self._mutex_vector[itemA] |= itemB.index
+        self._mutex_vector[itemB] |= itemA.index
+
+    def set_mutex(self, itemA, itemB):
+        super().set_mutex(itemA, itemB)
+        self.set_mutex_vector(itemA, itemB)
+
+    def relax_mutex(self, itemA, itemB):
+        self._mutexes[itemA].discard(itemB)
+        self._mutexes[itemB].discard(itemA)
+        self._mutex_vector[itemA] ^= itemB.index
+        self._mutex_vector[itemB] ^= itemA.index
 
     def update_mutexes(self):
         # Recheck all temporary mutexes from previous action layer, add to this layer if still mutex
         if not self._ignore_mutexes:
-            for actionA in self.parent_layer.parent_layer._mutexes:
-                for actionB in self.parent_layer.parent_layer._mutexes[actionA]:
+            for actionA in self._mutexes:
+                for actionB in self._mutexes[actionA]:
+                    relaxations = []
                     if self._competing_needs(actionA, actionB):
-                        self.set_mutex(actionA, actionB)
+                        self.set_mutex_vector(actionA, actionB)
+                    else:
+                        relaxations.append(actionB)
+                for actionB in relaxations:
+                    self.relax_mutex(actionA, actionB)
         # Test actions newly added in this layer against all actions in layer to find any new mutexes
         for actionA in self._new_actions:
             for actionB in self:
-                if not actionA in self._static_mutexes[actionB]:
+                if actionA != actionB and not self.is_mutex(actionA, actionB):
                     if self._serialize and actionA.no_op == actionB.no_op == False:
                         self.set_static_mutex(actionA, actionB)
                     elif (self._inconsistent_effects(actionA, actionB)
@@ -156,7 +192,6 @@ class ActionLayer(BaseLayer):
         """
         # DONE: implement this function
         return _inconsistent_effects(actionA, actionB)
-
 
     def _interference(self, actionA, actionB):
         """ Return True if the effects of either action negate the preconditions of the other 
@@ -188,9 +223,10 @@ class ActionLayer(BaseLayer):
         try:
             actionB_precondition_mutexes = 0
             for precondB in actionB.preconditions: #TODO cache this
-                actionB_precondition_mutexes |= self.parent_layer._mutexes_bitmap[precondB]
-            return actionA.preconditions_bitmap & actionB_precondition_mutexes
+                actionB_precondition_mutexes |= self.parent_layer._mutex_vector[precondB] #TODO Be careful if literal layer acquires static mutex vector
+            return actionA.preconditions_vector & actionB_precondition_mutexes
         except AttributeError:
+            # raise AttributeError("Should only occur on test 4")
             # This branch necessary to pass some Test_4_CompetingNeedsMutex unittests which build their own ActionNode
             return any(self.parent_layer.is_mutex(precondA, precondB)
                        for precondA in actionA.preconditions for precondB in actionB.preconditions)
@@ -201,10 +237,10 @@ class LiteralLayer(BaseLiteralLayer):
     def __init__(self, literals=[], parent_layer=None, ignore_mutexes=False):
         super().__init__(literals, parent_layer, ignore_mutexes)
         self._new_literals = set()
-        self._mutexes_bitmap = defaultdict(int)
+        self._mutex_vector = defaultdict(int)
         #TODO quick hack to get static mutexes in literal layer
         for literal in iter(self):
-            self._mutexes_bitmap[literal] = literal_index(~literal)
+            self._mutex_vector[literal] = literal_index(~literal)
 
     def _inconsistent_support(self, literalA, literalB):
         """ Return True if all ways to achieve both literals are pairwise mutex in the parent layer
@@ -219,8 +255,15 @@ class LiteralLayer(BaseLiteralLayer):
         """
         # DONE: implement this function
         causes_A, causes_B = self.parents[literalA], self.parents[literalB]
-
-        return not(causes_A & causes_B) and not any(causes_A - self.parent_layer._mutexes[causeB] - self.parent_layer._static_mutexes[causeB] for causeB in causes_B)
+        #return all(self.parent_layer.is_mutex(causeA, causeB) for causeA in causes_A for causeB in causes_B)
+        #TODO cache vectors in layer
+        causes_A_vector  = 0
+        for causeA in causes_A:
+            causes_A_vector |= causeA.index
+        causes_B_mutex_vector = causes_A_vector
+        for causeB in causes_B:
+            causes_B_mutex_vector &= (self.parent_layer._mutex_vector[causeB] | self.parent_layer._static_mutex_vector[causeB])
+        return causes_B_mutex_vector == causes_A_vector
 
 
     def _negation(self, literalA, literalB):
@@ -243,8 +286,8 @@ class LiteralLayer(BaseLiteralLayer):
 
     def set_mutex(self, itemA, itemB):
         super().set_mutex(itemA, itemB)
-        self._mutexes_bitmap[itemA] |= literal_index(itemB)
-        self._mutexes_bitmap[itemB] |= literal_index(itemA)
+        self._mutex_vector[itemA] |= literal_index(itemB)
+        self._mutex_vector[itemB] |= literal_index(itemA)
 
     def update_mutexes(self):
         if not self._ignore_mutexes:
