@@ -39,9 +39,10 @@ def list_items(items, item_list):
 
 
 class FastLiteralNode(Expr):
-    __slots__ = ['__negation']
+    __slots__ = ['index', '__negation']
     def __init__(self, op, *args):
         super().__init__(op, *args)
+        self.index = literal_index(self)
         self.__negation = args[0] if '~' == op else FastLiteralNode('~', self)
 
     def __invert__(self):
@@ -58,10 +59,10 @@ class FastActionNode(ActionNode):
         self.index = action_index(self)
         self.preconditions_vector = self.effects_vector = self.negated_effects_vector = 0
         for p in self.preconditions:
-            self.preconditions_vector |= literal_index(p)
+            self.preconditions_vector |= p.index
         for e in self.effects:
-            self.effects_vector |= literal_index(e)
-            self.negated_effects_vector |= literal_index(~e)
+            self.effects_vector |= e.index
+            self.negated_effects_vector |= (~e).index
 
     def __lt__(self, other):
         self.index < other.index
@@ -79,6 +80,7 @@ def make_FastActionNode(action, no_op=False):
 ##################################
 
 make_node = make_FastActionNode
+Expr.index = property(lambda self : literal_index(self))
 
 ##################################
 @lru_cache(None)
@@ -250,10 +252,15 @@ class LiteralLayer(BaseLiteralLayer):
     def __init__(self, literals=[], parent_layer=None, ignore_mutexes=False):
         super().__init__(literals, parent_layer, ignore_mutexes)
         self._new_literals = set()
-        self._mutex_vector = defaultdict(int)
-        #TODO quick hack to get static mutexes in literal layer
-        for literal in iter(self):
-            self._mutex_vector[literal] = literal_index(~literal)
+        if isinstance(literals, LiteralLayer):
+            self._mutex_vector = literals._mutex_vector.copy()
+            self._mutexes = literals._mutexes
+        else:
+            self._mutex_vector = defaultdict(int)
+            #TODO quick hack to get static mutexes in literal layer
+            for literal in iter(self):
+                self._mutex_vector[literal] = (~literal).index
+
 
     def _inconsistent_support(self, literalA, literalB):
         """ Return True if all ways to achieve both literals are pairwise mutex in the parent layer
@@ -286,6 +293,12 @@ class LiteralLayer(BaseLiteralLayer):
 
 ################  Add Faster implementation
 
+    def __eq__(self, other):
+        return (len(self) == len(other) and
+                len(self._mutex_vector) == len(other._mutex_vector) and
+                not(self ^ other) and
+                self._mutex_vector == other._mutex_vector)
+
     def add(self, literal):
        if literal not in self:
             self._new_literals.add(literal)
@@ -295,26 +308,49 @@ class LiteralLayer(BaseLiteralLayer):
         pass
 
     def is_mutex(self, itemA, itemB):
-        return itemA == ~itemB or itemA in self._mutexes[itemB]
+        return itemA.index & self._mutex_vector[itemB]
 
     def set_mutex(self, itemA, itemB):
         super().set_mutex(itemA, itemB)
-        self._mutex_vector[itemA] |= literal_index(itemB)
-        self._mutex_vector[itemB] |= literal_index(itemA)
+        self.set_mutex_vector(itemA, itemB)
+
+    def set_mutex_vector(self, itemA, itemB):
+        self._mutex_vector[itemA] |= itemB.index
+        self._mutex_vector[itemB] |= itemA.index
+
+    def relax_mutex(self, itemA, itemB):
+        if self._mutex_vector[itemA] & itemB.index == itemB.index:
+            self._mutex_vector[itemA] ^= itemB.index
+        if itemA != itemB and self._mutex_vector[itemB] & itemA.index == itemA.index :
+            self._mutex_vector[itemB] ^= itemA.index
+
+        if itemA in self._mutexes[itemB]:
+            self._mutexes[itemB].remove(itemA)
+        if itemB in self._mutexes[itemA]:
+            self._mutexes[itemA].remove(itemB)
 
     def update_mutexes(self):
         if not self._ignore_mutexes:
             # Recheck all dynamic mutexes from previous literal layer (if there is one), add to this layer if still mutex
-            if self.parent_layer:
-                for literalA in self.parent_layer.parent_layer._mutexes:
-                    for literalB in self.parent_layer.parent_layer._mutexes[literalA]:
+            if self.parent_layer and not self._ignore_mutexes:
+                for literalA in self._mutexes:
+                    relaxations = []
+                    for literalB in self._mutexes[literalA]:
                         if self._inconsistent_support(literalA, literalB):
                             self.set_mutex(literalA, literalB)
+                        else:
+                            relaxations.append(literalB)
+                    for literalB in relaxations:
+                        self.relax_mutex(literalA, literalB)
             # Test literals newly added in this layer against all literals in layer to find any new mutexes
             for literalA in self._new_literals:
                 for literalB in self:
-                    if literalA != literalB != ~literalB:
-                        if self._inconsistent_support(literalA, literalB):
+                    if literalA != literalB:
+                        if self._negation(literalA, literalB):
+                            self.set_mutex_vector(literalA, literalB)
+                        elif self._ignore_mutexes:
+                            continue
+                        elif self._inconsistent_support(literalA, literalB):
                             self.set_mutex(literalA, literalB)
 
 class PlanningGraph:
