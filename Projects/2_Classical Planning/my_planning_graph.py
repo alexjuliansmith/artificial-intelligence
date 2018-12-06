@@ -1,10 +1,9 @@
 
 from itertools import chain, combinations
 from functools import lru_cache
-from aimacode.planning import Action
 from aimacode.utils import Expr
 from collections import defaultdict
-from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
+from layers import BaseLayer, makeNoOp, make_node, ActionNode
 
 
 #################################
@@ -37,6 +36,88 @@ def list_items(items, item_list):
         index += 1
     return result
 
+#############################################################################
+class FastBaseLayer(BaseLayer):
+    def __init__(self, grandparent_layer=[], parent_layer=None, ignore_mutexes=False):
+        super().__init__(grandparent_layer, parent_layer, ignore_mutexes)
+        self._new_items = set()
+        if isinstance(grandparent_layer, (LiteralLayer, ActionLayer)):
+            self._mutexes = grandparent_layer._mutexes
+            self._mutex_vector = grandparent_layer._mutex_vector.copy()
+        else:
+            self._mutex_vector = defaultdict(int)
+
+    def __eq__(self, other):
+        return (len(self) == len(other) and
+                len(self._mutex_vector) == len(other._mutex_vector) and
+                not(self ^ other) and
+                self._mutex_vector == other._mutex_vector)
+
+    def add(self, item):
+        if item not in self:
+            self._new_items.add(item)
+            super().add(item)
+
+    def is_mutex(self, itemA, itemB):
+        return itemA.index & self._mutex_vector[itemB]
+
+    def set_mutex(self, itemA, itemB):
+#        assert itemA not in self._mutexes[itemB] and itemB not in self._mutexes[itemA], "{} in {}\nor\n{} in {}".format(itemA, self._mutexes[itemB], itemB, self._mutexes[itemA])
+
+        super().set_mutex(itemA, itemB)
+        self.set_mutex_vector(itemA, itemB)
+
+        assert itemA in self._mutexes[itemB] and itemB in self._mutexes[itemA]
+
+    def set_static_mutex(self, itemA, itemB):
+        self.set_mutex_vector(itemA, itemB)
+
+    def set_mutex_vector(self, itemA, itemB):
+        assert itemA != itemB
+#        assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
+
+        self._mutex_vector[itemA] |= itemB.index
+        self._mutex_vector[itemB] |= itemA.index
+
+        assert self._mutex_vector[itemA] & itemB.index == itemB.index and self._mutex_vector[itemB] & itemA.index == itemA.index
+
+    def relax_mutex(self, itemA, itemB):
+        assert itemA != itemB
+        assert itemA in self._mutexes[itemB] and itemB in self._mutexes[itemA]
+        assert self._mutex_vector[itemA] & itemB.index == itemB.index and self._mutex_vector[itemB] & itemA.index == itemA.index
+
+        self._mutexes[itemA].remove(itemB)
+        self._mutexes[itemB].remove(itemA)
+        self._mutex_vector[itemA] ^= itemB.index
+        self._mutex_vector[itemB] ^= itemA.index
+
+        assert itemA not in self._mutexes[itemB] and itemB not in self._mutexes[itemA]
+        assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
+
+    def update_mutexes(self):
+        if not self._ignore_mutexes:
+            # Recheck all temporary mutexes from previous layer, relax if not still mutex
+            if not self._ignore_mutexes:
+                for itemA in self._mutexes:
+                    relaxations = []
+                    for itemB in self._mutexes[itemA]:
+                        if not self.is_temporary_mutex(itemA, itemB):
+                            relaxations.append(itemB)
+                    for itemB in relaxations:
+                        self.relax_mutex(itemA, itemB)
+        # Test items newly added in this layer against all items to find any new mutexes
+        for itemA in self._new_items:
+            for itemB in self:
+                if itemA != itemB:
+                    if self.is_static_mutex(itemA, itemB):
+                        self.set_static_mutex(itemA, itemB)
+                    elif not self._ignore_mutexes and self.is_temporary_mutex(itemA, itemB):
+                        self.set_mutex(itemA, itemB)
+
+    def add_outbound_edges(self, action, literals):
+        pass
+
+##############################################################################
 
 class FastLiteralNode(Expr):
     __slots__ = ['index', '__negation']
@@ -110,89 +191,13 @@ def _interference(actionA: ActionNode, actionB: ActionNode):
             or any(~precondB in actionA.effects for precondB in actionB.preconditions)
 
 
-class ActionLayer(BaseLayer):
+class ActionLayer(FastBaseLayer):
 
     def __init__(self, actions=[], parent_layer=None, serialize=True, ignore_mutexes=False):
         super().__init__(actions, parent_layer, ignore_mutexes)
         self._serialize = serialize
-        self._new_actions = set()
-        if isinstance(actions, ActionLayer):
-            self._mutexes = actions._mutexes
-            self._mutex_vector = actions._mutex_vector.copy()
-        else:
-            self._mutex_vector = defaultdict(int)
 
-    def add(self, action: ActionNode):
-        assert action not in self, "Error: Action can only be added once"
-        self._new_actions.add(action)
-        super().add(action)
 
-    def is_mutex(self, itemA, itemB):
-        return itemA.index & self._mutex_vector[itemB]
-
-    def set_mutex_vector(self, itemA, itemB):
-        assert itemA != itemB
-        assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
-
-        self._mutex_vector[itemA] |= itemB.index
-        self._mutex_vector[itemB] |= itemA.index
-
-        assert self._mutex_vector[itemA] & itemB.index == itemB.index and self._mutex_vector[itemB] & itemA.index == itemA.index
-
-    def set_mutex(self, itemA, itemB):
-        assert itemA != itemB
-        assert itemA not in self._mutexes[itemB] and itemB not in self._mutexes[itemA]
-        assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
-
-        super().set_mutex(itemA, itemB)
-        self.set_mutex_vector(itemA, itemB)
-
-        assert itemA in self._mutexes[itemB] and itemB in self._mutexes[itemA]
-        assert self._mutex_vector[itemA] & itemB.index == itemB.index and self._mutex_vector[itemB] & itemA.index == itemA.index
-
-    def relax_mutex(self, itemA, itemB):
-        assert itemA != itemB
-        assert itemA in self._mutexes[itemB] and itemB in self._mutexes[itemA]
-        assert self._mutex_vector[itemA] & itemB.index == itemB.index and self._mutex_vector[itemB] & itemA.index == itemA.index
-
-        self._mutexes[itemA].remove(itemB)
-        self._mutexes[itemB].remove(itemA)
-        self._mutex_vector[itemA] ^= itemB.index
-        self._mutex_vector[itemB] ^= itemA.index
-
-        assert itemA not in self._mutexes[itemB] and itemB not in self._mutexes[itemA]
-        assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
-
-    def update_mutexes(self):
-        # Recheck all temporary mutexes from previous action layer, relax ones which are no longer mutex
-        if not self._ignore_mutexes:
-            for actionA in self._mutexes:
-                relaxations = []
-                for actionB in self._mutexes[actionA]:
-                    #if actionA != actionB:
-                        if not self._competing_needs(actionA, actionB):
-                            relaxations.append(actionB)
-                for actionB in relaxations:
-                    self.relax_mutex(actionA, actionB)
-        # Test actions newly added in this layer against all actions in layer to find any new mutexes
-        for actionA in self._new_actions:
-            for actionB in self:
-                if actionA != actionB and not self.is_mutex(actionA, actionB):
-                    if self._serialize and actionA.no_op == actionB.no_op == False:
-                        self.set_mutex_vector(actionA, actionB)
-                    elif (self._inconsistent_effects(actionA, actionB)
-                          or self._interference(actionA, actionB)):
-                        self.set_mutex_vector(actionA, actionB)
-                    elif self._ignore_mutexes:
-                        continue
-                    elif self._competing_needs(actionA, actionB):
-                        self.set_mutex(actionA, actionB)
-
-    def add_inbound_edges(self, action, literals):
-        pass
-
-    def add_outbound_edges(self, action, literals):
-        pass
 
     def _inconsistent_effects(self, actionA, actionB):
         """ Return True if an effect of one action negates an effect of the other
@@ -246,18 +251,30 @@ class ActionLayer(BaseLayer):
             return any(self.parent_layer.is_mutex(precondA, precondB)
                        for precondA in actionA.preconditions for precondB in actionB.preconditions)
 
+    ################  Add Faster implementation
 
-class LiteralLayer(BaseLiteralLayer):
+    def add_inbound_edges(self, action, literals):
+        pass
+
+    def is_static_mutex(self, actionA, actionB):
+        return (self._serialize and actionA.no_op == actionB.no_op == False) \
+            or self._inconsistent_effects(actionA, actionB) \
+            or self._interference(actionA, actionB)
+
+    def is_temporary_mutex(self, actionA, actionB):
+        return self._competing_needs(actionA, actionB)
+
+
+
+
+class LiteralLayer(FastBaseLayer):
 
     def __init__(self, literals=[], parent_layer=None, ignore_mutexes=False):
         super().__init__(literals, parent_layer, ignore_mutexes)
-        self._new_literals = set()
         if isinstance(literals, LiteralLayer):
-            self._mutex_vector = literals._mutex_vector.copy()
-            self._mutexes = literals._mutexes
+            self.parents.update({k: set(v) for k, v in literals.parents.items()})
         else:
-            self._mutex_vector = defaultdict(int)
-            #TODO quick hack to get static mutexes in literal layer
+            #TODO quick hack to get static mutexes in literal layer for Test4b
             for literal in iter(self):
                 self._mutex_vector[literal] = (~literal).index
 
@@ -291,67 +308,19 @@ class LiteralLayer(BaseLiteralLayer):
         # DONE: implement this function
         return literalA == ~literalB
 
-################  Add Faster implementation
+    ################  Add Faster implementation
 
-    def __eq__(self, other):
-        return (len(self) == len(other) and
-                len(self._mutex_vector) == len(other._mutex_vector) and
-                not(self ^ other) and
-                self._mutex_vector == other._mutex_vector)
+    def add_inbound_edges(self, action, literals):
+    # inbound literal edges are many-to-many
+        for literal in literals:
+            self.parents[literal].add(action)
 
-    def add(self, literal):
-       if literal not in self:
-            self._new_literals.add(literal)
-            super().add(literal)
+    def is_static_mutex(self, literalA, literalB):
+        return self._negation(literalA, literalB)
 
-    def add_outbound_edges(self, action, literals):
-        pass
+    def is_temporary_mutex(self, literalA, literalB):
+        return self._inconsistent_support(literalA, literalB)
 
-    def is_mutex(self, itemA, itemB):
-        return itemA.index & self._mutex_vector[itemB]
-
-    def set_mutex(self, itemA, itemB):
-        super().set_mutex(itemA, itemB)
-        self.set_mutex_vector(itemA, itemB)
-
-    def set_mutex_vector(self, itemA, itemB):
-        self._mutex_vector[itemA] |= itemB.index
-        self._mutex_vector[itemB] |= itemA.index
-
-    def relax_mutex(self, itemA, itemB):
-        if self._mutex_vector[itemA] & itemB.index == itemB.index:
-            self._mutex_vector[itemA] ^= itemB.index
-        if itemA != itemB and self._mutex_vector[itemB] & itemA.index == itemA.index :
-            self._mutex_vector[itemB] ^= itemA.index
-
-        if itemA in self._mutexes[itemB]:
-            self._mutexes[itemB].remove(itemA)
-        if itemB in self._mutexes[itemA]:
-            self._mutexes[itemA].remove(itemB)
-
-    def update_mutexes(self):
-        if not self._ignore_mutexes:
-            # Recheck all dynamic mutexes from previous literal layer (if there is one), add to this layer if still mutex
-            if self.parent_layer and not self._ignore_mutexes:
-                for literalA in self._mutexes:
-                    relaxations = []
-                    for literalB in self._mutexes[literalA]:
-                        if self._inconsistent_support(literalA, literalB):
-                            self.set_mutex(literalA, literalB)
-                        else:
-                            relaxations.append(literalB)
-                    for literalB in relaxations:
-                        self.relax_mutex(literalA, literalB)
-            # Test literals newly added in this layer against all literals in layer to find any new mutexes
-            for literalA in self._new_literals:
-                for literalB in self:
-                    if literalA != literalB:
-                        if self._negation(literalA, literalB):
-                            self.set_mutex_vector(literalA, literalB)
-                        elif self._ignore_mutexes:
-                            continue
-                        elif self._inconsistent_support(literalA, literalB):
-                            self.set_mutex(literalA, literalB)
 
 class PlanningGraph:
     def __init__(self, problem, state, serialize=True, ignore_mutexes=False):
