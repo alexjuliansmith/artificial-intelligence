@@ -41,7 +41,8 @@ class FastBaseLayer(BaseLayer):
     def __init__(self, grandparent_layer=[], parent_layer=None, ignore_mutexes=False):
         super().__init__(grandparent_layer, parent_layer, ignore_mutexes)
         self._new_items = set()
-        if isinstance(grandparent_layer, (LiteralLayer, ActionLayer)):
+        self._items_relaxed = set()
+        if isinstance(grandparent_layer, BaseLayer):
             self._mutexes = grandparent_layer._mutexes
             self._mutex_vector = grandparent_layer._mutex_vector.copy()
         else:
@@ -94,17 +95,21 @@ class FastBaseLayer(BaseLayer):
         assert itemA not in self._mutexes[itemB] and itemB not in self._mutexes[itemA]
         assert self._mutex_vector[itemA] & itemB.index == self._mutex_vector[itemB] & itemA.index == 0
 
+
+
+    def add_outbound_edges(self, action, literals):
+        pass
+
     def update_mutexes(self):
         if not self._ignore_mutexes:
             # Recheck all temporary mutexes from previous layer, relax if not still mutex
-            if not self._ignore_mutexes:
-                for itemA in self._mutexes:
-                    relaxations = []
-                    for itemB in self._mutexes[itemA]:
-                        if not self.is_temporary_mutex(itemA, itemB):
-                            relaxations.append(itemB)
-                    for itemB in relaxations:
-                        self.relax_mutex(itemA, itemB)
+            for itemA in self._mutexes:
+                relaxations = []
+                for itemB in self._mutexes[itemA]:
+                    if not self.is_temporary_mutex(itemA, itemB):
+                        relaxations.append(itemB)
+                for itemB in relaxations:
+                    self.relax_mutex(itemA, itemB)
         # Test items newly added in this layer against all items to find any new mutexes
         for itemA in self._new_items:
             for itemB in self:
@@ -113,9 +118,6 @@ class FastBaseLayer(BaseLayer):
                         self.set_static_mutex(itemA, itemB)
                     elif not self._ignore_mutexes and self.is_temporary_mutex(itemA, itemB):
                         self.set_mutex(itemA, itemB)
-
-    def add_outbound_edges(self, action, literals):
-        pass
 
 ##############################################################################
 
@@ -243,7 +245,7 @@ class ActionLayer(FastBaseLayer):
         try:
             actionB_precondition_mutexes = 0
             for precondB in actionB.preconditions: #TODO cache this
-                actionB_precondition_mutexes |= self.parent_layer._mutex_vector[precondB] #TODO Be careful if literal layer acquires static mutex vector
+                actionB_precondition_mutexes |= self.parent_layer._mutex_vector[precondB]
             return actionA.preconditions_vector & actionB_precondition_mutexes
         except AttributeError:
             # raise AttributeError("Should only occur on test 4")
@@ -258,12 +260,36 @@ class ActionLayer(FastBaseLayer):
 
     def is_static_mutex(self, actionA, actionB):
         return (self._serialize and actionA.no_op == actionB.no_op == False) \
+            or self._interference(actionA, actionB) \
             or self._inconsistent_effects(actionA, actionB) \
-            or self._interference(actionA, actionB)
 
     def is_temporary_mutex(self, actionA, actionB):
-        return self._competing_needs(actionA, actionB)
+            return self._competing_needs(actionA, actionB)
 
+    def relax_mutex(self, actionA, actionB):
+        super().relax_mutex(actionA, actionB)
+        self._items_relaxed |= actionA.effects | actionB.effects
+
+    def update_mutexes(self):
+        if not self._ignore_mutexes:
+            # Recheck all temporary mutexes from previous layer, relax if not still mutex
+            possible_actions_to_relax = self.parent_layer._items_relaxed
+            while possible_actions_to_relax:
+                itemA = possible_actions_to_relax.pop()
+                relaxations = []
+                for itemB in self._mutexes[itemA]:
+                    if itemB in possible_actions_to_relax and not self.is_temporary_mutex(itemA, itemB):
+                        relaxations.append(itemB)
+                for itemB in relaxations:
+                    self.relax_mutex(itemA, itemB)
+        # Test items newly added in this layer against all items to find any new mutexes
+        for itemA in self._new_items:
+            for itemB in self:
+                if itemA != itemB:
+                    if self.is_static_mutex(itemA, itemB):
+                        self.set_static_mutex(itemA, itemB)
+                    elif not self._ignore_mutexes and self.is_temporary_mutex(itemA, itemB):
+                        self.set_mutex(itemA, itemB)
 
 
 
@@ -273,6 +299,7 @@ class LiteralLayer(FastBaseLayer):
         super().__init__(literals, parent_layer, ignore_mutexes)
         if isinstance(literals, LiteralLayer):
             self.parents.update({k: set(v) for k, v in literals.parents.items()})
+            self.children = literals.children
         else:
             #TODO quick hack to get static mutexes in literal layer for Test4b
             for literal in iter(self):
@@ -315,11 +342,20 @@ class LiteralLayer(FastBaseLayer):
         for literal in literals:
             self.parents[literal].add(action)
 
+    def add_outbound_edges(self, action, literals):
+        # outbound literal edges are many-to-many
+        for literal in literals:
+            self.children[literal].add(action)
+
     def is_static_mutex(self, literalA, literalB):
         return self._negation(literalA, literalB)
 
     def is_temporary_mutex(self, literalA, literalB):
         return self._inconsistent_support(literalA, literalB)
+
+    def relax_mutex(self, literalA, literalB):
+        super().relax_mutex(literalA, literalB)
+        self._items_relaxed |= self.children[literalA] | self.children[literalB]
 
 
 class PlanningGraph:
