@@ -42,5 +42,12 @@ class CustomPlayer(DataPlayer):
         # EXAMPLE: choose a random move without any search--this function MUST
         #          call self.queue.put(ACTION) at least once before time expires
         #          (the timer is automatically managed for you)
-        import random
-        self.queue.put(random.choice(state.actions()))
+        ##import random
+        ##self.queue.put(random.choice(state.actions()))
+
+### TO TEMP imports - remove before submission
+from my_sample_players import *
+
+CustomPlayer = AlphaBetaPlayer
+CustomPlayer = ID_MinimaxPlayer
+CustomPlayer = VerifyEquivalencePlayer
