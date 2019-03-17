@@ -1,5 +1,6 @@
 
 import random
+from collections import defaultdict, Counter
 
 from isolation import DebugState
 import isolation.isolation as isolation
@@ -12,6 +13,22 @@ WIN, LOSS = float("inf"), float("-inf")
 
 MOVE_BIT_SHIFTS = [int(a) for a in isolation._ACTIONSET if a > 0]
 BOARD_MASK = isolation._BLANK_BOARD
+
+
+#######################################
+# Instrumentation
+#######################################
+def instrument_node(func):
+    def wrapper(self, state, *args, **kwargs):
+        #TODO metrics
+        self.context[self.METRIC_NODES_SEARCHED][state.ply_count] += 1
+        return func(self, state, *args, **kwargs)
+
+    if True:
+        return wrapper
+    else:
+        return func
+
 
 ######################################
 # Bitboard functions
@@ -46,19 +63,21 @@ def get_knight_moves(knights, valid_squares):
     moves &= valid_squares
     return moves
 
-def get_all_knight_moves(knights):
+def get_all_knight_moves(knights, valid_squares=None):
     """
     Given
     knights: bitboard with locations of a set of knights
+    valid_square: optional bitboard identifying all squares that can be legally moved to
+    if provided then it is used to mask out invalid knights moves
     Return
     Bitboard with all squares that any knight can move to (doesn't include original knight positions)
-    It is the caller's responsibility to mask out invalid moves
-
     """
     moves = 0
     for mbs in MOVE_BIT_SHIFTS:
         moves |= (knights << mbs)
         moves |= (knights >> mbs)
+    if valid_squares:
+        moves &= valid_squares
     return moves
 
 ######################################
@@ -71,9 +90,27 @@ def get_all_knight_moves(knights):
 
 class IterativeDeepeningPlayer(DataPlayer):
 
+    METRIC_BRANCHING_FACTOR = 'branching factor'
+    METRIC_SCORES = 'scores'
+    METRIC_MOVES = 'moves'
+    METRIC_DEPTH = 'depth'
+    METRIC_NODES_SEARCHED = "nodes searched"
+
     score = MinimaxPlayer.score  # Default heuristic, can be overridden in subclass
 
+    def __init__(self, player_id):
+        super().__init__(player_id)
+        ## TODO metrics
+        self.context = {}
+        self.context[self.METRIC_BRANCHING_FACTOR] = {}
+        self.context[self.METRIC_DEPTH] = defaultdict(int)
+        self.context[self.METRIC_NODES_SEARCHED] = defaultdict(int)
+
+        self.context[self.METRIC_SCORES] = defaultdict(list)
+        self.context[self.METRIC_MOVES] = defaultdict(list)
+
     def get_action(self, state):
+
 
         try:
             # Seed the queue, so we always have a move after timeout
@@ -84,10 +121,18 @@ class IterativeDeepeningPlayer(DataPlayer):
 
         # If this is not player's first move, progressively improve the seed move using an iterative deepening search
         if state.ply_count >= 2:
-            # Continue iterative deepening until we run out of free aquares (or time)
+            self.context[self.METRIC_BRANCHING_FACTOR][state.ply_count] = len(state.actions())
+
+        # Continue iterative deepening until we run out of free aquares (or time)
             free_squares = count_bits(state.board)
-            for depth in range(free_squares):
-                best_score, best_move = self.search(state, depth + 1)
+            for depth in range(1, free_squares + 1):
+                best_score, best_move = self.search(state, depth)
+
+                ## save metrics
+                self.context[self.METRIC_SCORES][state.ply_count] += [best_score]
+                self.context[self.METRIC_MOVES][state.ply_count] += [best_move]
+                self.context[self.METRIC_DEPTH][state.ply_count] = depth
+
                 self.queue.put(best_move)
                 if best_score in (WIN, LOSS):
                     break  # Forced result, no need to use up the rest of the search time
@@ -108,6 +153,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
     def search(self, state, depth):
         return self.max_value(state, depth, LOSS, WIN)
 
+    @instrument_node
     def min_value(self, state, depth, alpha, beta):
 
         moves = state.actions()
@@ -131,6 +177,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
         return best_score, best_move
 
 
+    @instrument_node
     def max_value(self, state, depth, alpha, beta):
 
         moves = state.actions()
@@ -156,24 +203,26 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
 class ID_MinimaxPlayer(IterativeDeepeningPlayer):
 
     def search(self, state, depth):
-        def min_value(state, depth):
-            if state.terminal_test(): return state.utility(self.player_id)
-            if depth <= 0: return self.score(state)
-            value = float("inf")
-            for action in state.actions():
-                value = min(value, max_value(state.result(action), depth - 1))
-            return value
+        move_scores = [(self.min_value(state.result(action), depth - 1), action) for action in state.actions()]
+        return max(move_scores)
 
-        def max_value(state, depth):
-            if state.terminal_test(): return state.utility(self.player_id)
-            if depth <= 0: return self.score(state)
-            value = float("-inf")
-            for action in state.actions():
-                value = max(value, min_value(state.result(action), depth - 1))
-            return value
+    @instrument_node
+    def min_value(self, state, depth):
+        if state.terminal_test(): return state.utility(self.player_id)
+        if depth <= 0: return self.score(state)
+        value = float("inf")
+        for action in state.actions():
+            value = min(value, self.max_value(state.result(action), depth - 1))
+        return value
 
-        results = [(min_value(state.result(action), depth - 1), action) for action in state.actions()]
-        return max(results)
+    @instrument_node
+    def max_value(self, state, depth):
+        if state.terminal_test(): return state.utility(self.player_id)
+        if depth <= 0: return self.score(state)
+        value = float("-inf")
+        for action in state.actions():
+            value = max(value, self.min_value(state.result(action), depth - 1))
+        return value
 
 class VerifyEquivalencePlayer(AlphaBetaPlayer, ID_MinimaxPlayer):
 
@@ -301,19 +350,20 @@ class CustomScore2_ABPlayer(CustomScore_ABPlayer):
         return active_min_moves, inactive_min_moves, num_active_controlled_squares, num_inactive_controlled_squares
 
     def knights_score_best(self, state):
-        # Initialise starting state
+        # Initialise bitboards
         active_wavefront = 1 << state.locs[state.player()]
         inactive_wavefront = 1 << state.locs[1 - state.player()]
         empty_squares = state.board
-        # Initialise player scores
-        active_min_moves = inactive_min_moves = active_controlled_squares = inactive_controlled_squares = 0
+        active_controlled_squares = inactive_controlled_squares = 0
+        # Initialise player wavefront counts
+        active_min_moves = inactive_min_moves = 0
 
         # While at least one player can still make moves
         # For each player:
-        # 1. Update the wavefront by making all moves available to all knights on the current 'wavefront'
-        # 2. Mask these potential moves against the empty (valid and still available) squares
-        # 3. Remove the new wavefront squares from the empty squares
-        # 4. Add the new wavefront squares to the cumulative player controlled squares
+        # 1. Update the 'wavefront' bitboardby making all moves by all knights on the current wavefront
+        # 2. Mask these potential moves against the empty (valid and still available) squares bitboard
+        # 3. Remove the new wavefront squares from the empty squares bitboard
+        # 4. Add the new wavefront squares to the cumulative player controlled squares bitboard
         # 5. If there are any valid moves in the new wavefront, increment the player's minimum number of moves
         while active_wavefront or inactive_wavefront:
             if active_wavefront:

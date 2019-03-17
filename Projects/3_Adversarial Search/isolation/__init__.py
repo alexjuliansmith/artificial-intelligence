@@ -158,7 +158,7 @@ def _play(agents, game_state, time_limit, match_id, debug=False):
             winner, loser = loser, winner  # swap winner/loser if active player won
 
     logger.info(RESULT_INFO.format(status, game_state, game_history, winner, loser))
-    return winner, game_history, match_id
+    return winner, game_history, match_id, players
 
 
 def fork_get_action(game_state, active_player, time_limit, debug=False):

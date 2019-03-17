@@ -13,7 +13,7 @@ from multiprocessing.pool import ThreadPool as Pool
 
 from isolation import Isolation, Agent, play
 from sample_players import RandomPlayer, GreedyPlayer, MinimaxPlayer
-from my_custom_player import CustomPlayer
+from my_custom_player import CustomPlayer, AlphaBetaPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ TEST_AGENTS = {
     "RANDOM": Agent(RandomPlayer, "Random Agent"),
     "GREEDY": Agent(GreedyPlayer, "Greedy Agent"),
     "MINIMAX": Agent(MinimaxPlayer, "Minimax Agent"),
-    "SELF": Agent(CustomPlayer, "Custom TestAgent")
+    "SELF": Agent(CustomPlayer, "Custom TestAgent"),
+    "AB": Agent(AlphaBetaPlayer, "AlphaBeta Agent")
 }
 
 Match = namedtuple("Match", "players initial_state time_limit match_id debug_flag")
@@ -44,7 +45,7 @@ def _run_matches(matches, name, num_processes=NUM_PROCS, debug=False):
 
 def make_fair_matches(matches, results):
     new_matches = []
-    for _, game_history, match_id in results:
+    for _, game_history, match_id, players in results:
         if len(game_history) < 2:
             logger.warn(textwrap.dedent("""\
                 Unable to duplicate match {}

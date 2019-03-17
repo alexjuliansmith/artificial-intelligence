@@ -22,7 +22,7 @@ class BaseCustomHeuristicTest(unittest.TestCase):
 class CustomPlayerGetActionTest(BaseCustomHeuristicTest):
 
     def test_get_knights(self):
-        """ get_action() calls self.queue.put() before timeout on an empty board """
+        """ get knights moves wavefronts fill an empty bpard from centre as expected """
         knights = self.knight_start
         booard_ids = [41523161179755588175928227572738047,
                       38114874426268006157864658273658711,
@@ -31,7 +31,8 @@ class CustomPlayerGetActionTest(BaseCustomHeuristicTest):
                       13835983132169903245103409681572522]
 
         for i in range(5):
-            moves = get_knight_moves(knights, isolation._BLANK_BOARD)
+            #moves = get_knight_moves(knights, isolation._BLANK_BOARD)
+            moves = get_all_knight_moves(knights, isolation._BLANK_BOARD)
             photo_negative = moves ^ BOARD_MASK
             self.assertEqual(photo_negative, booard_ids[i])
 
