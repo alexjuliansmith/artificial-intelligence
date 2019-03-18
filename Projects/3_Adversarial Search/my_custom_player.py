@@ -1,13 +1,15 @@
 
 import random
 from collections import defaultdict, Counter
+from timeit import default_timer as timer
 
 from isolation import DebugState
 import isolation.isolation as isolation
 
 from sample_players import DataPlayer, MinimaxPlayer
 
-
+INSTRUMENTATION_ON = True
+SCORE_TIMING_ON = True
 
 WIN, LOSS = float("inf"), float("-inf")
 
@@ -18,16 +20,30 @@ BOARD_MASK = isolation._BLANK_BOARD
 #######################################
 # Instrumentation
 #######################################
-def instrument_node(func):
-    def wrapper(self, state, *args, **kwargs):
-        #TODO metrics
-        self.context[self.METRIC_NODES_SEARCHED][state.ply_count] += 1
-        return func(self, state, *args, **kwargs)
+def instrument_node(search_node_method):
+    def wrapper(self, *args, **kwargs):
+        self.context[self.METRIC_NODES_SEARCHED][self.ply] += 1
+        return search_node_method(self, *args, **kwargs)
 
-    if True:
+    if INSTRUMENTATION_ON:
         return wrapper
     else:
-        return func
+        return search_node_method
+
+
+def instrument_score(score_method):
+    def wrapper(self, *args, **kwargs):
+        start = timer()
+        result = score_method(self, *args, **kwargs)
+        self.context[self.METRIC_SCORE_ELAPSED_TIME][self.ply].append(timer() - start)
+        return result
+
+    if INSTRUMENTATION_ON and SCORE_TIMING_ON:
+        return wrapper
+    else:
+        return score_method
+
+
 
 
 ######################################
@@ -95,43 +111,50 @@ class IterativeDeepeningPlayer(DataPlayer):
     METRIC_MOVES = 'moves'
     METRIC_DEPTH = 'depth'
     METRIC_NODES_SEARCHED = "nodes searched"
+    METRIC_SCORE_ELAPSED_TIME = "score elapsed time"
 
+    SEARCH_DEPTH_LIMIT = None  # Fixed depth to limit iterative deepening, can be overridden in subclass
     score = MinimaxPlayer.score  # Default heuristic, can be overridden in subclass
 
     def __init__(self, player_id):
         super().__init__(player_id)
-        ## TODO metrics
-        self.context = {}
-        self.context[self.METRIC_BRANCHING_FACTOR] = {}
-        self.context[self.METRIC_DEPTH] = defaultdict(int)
-        self.context[self.METRIC_NODES_SEARCHED] = defaultdict(int)
+        if INSTRUMENTATION_ON:
+            ## initialise  metrics
+            self.context = {}
+            self.context[self.METRIC_BRANCHING_FACTOR] = {}
+            self.context[self.METRIC_DEPTH] = defaultdict(int)
+            self.context[self.METRIC_NODES_SEARCHED] = defaultdict(int)
+            self.context[self.METRIC_SCORE_ELAPSED_TIME] = defaultdict(list)
 
-        self.context[self.METRIC_SCORES] = defaultdict(list)
-        self.context[self.METRIC_MOVES] = defaultdict(list)
+            self.context[self.METRIC_SCORES] = defaultdict(list)
+            self.context[self.METRIC_MOVES] = defaultdict(list)
 
     def get_action(self, state):
-
 
         try:
             # Seed the queue, so we always have a move after timeout
             self.queue.put(random.choice(state.actions()))
         except IndexError:
-            # Active Player has no legal moves, just return leaving the queue empty
+            # Active Player has no legal moves, just return (leaving the queue empty)
             return
 
         # If this is not player's first move, progressively improve the seed move using an iterative deepening search
         if state.ply_count >= 2:
-            self.context[self.METRIC_BRANCHING_FACTOR][state.ply_count] = len(state.actions())
+            if INSTRUMENTATION_ON:
+                self.ply = state.ply_count # store current ply for use by instrumentation
+                self.context[self.METRIC_BRANCHING_FACTOR][self.ply] = len(state.actions())
 
-        # Continue iterative deepening until we run out of free aquares (or time)
+            # Continue iterative deepening until we run out of time, free aquares or reach fixed search depth limit
             free_squares = count_bits(state.board)
-            for depth in range(1, free_squares + 1):
+            max_search_depth = min(self.SEARCH_DEPTH_LIMIT, free_squares) if self.SEARCH_DEPTH_LIMIT else free_squares
+
+            for depth in range(1, max_search_depth + 1):
                 best_score, best_move = self.search(state, depth)
 
-                ## save metrics
-                self.context[self.METRIC_SCORES][state.ply_count] += [best_score]
-                self.context[self.METRIC_MOVES][state.ply_count] += [best_move]
-                self.context[self.METRIC_DEPTH][state.ply_count] = depth
+                if INSTRUMENTATION_ON:
+                    self.context[self.METRIC_SCORES][self.ply] += [best_score]
+                    self.context[self.METRIC_MOVES][self.ply] += [best_move]  ##TODO make these two optional
+                    self.context[self.METRIC_DEPTH][self.ply] = depth
 
                 self.queue.put(best_move)
                 if best_score in (WIN, LOSS):
@@ -170,7 +193,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
             score, _ = self.max_value(state.result(move), depth - 1, alpha, beta)
             if score < best_score:
                 if score <= alpha:
-                    return score, move  # Maximising player has an equal or better move choice, stop searching this line
+                    return score, move  # Active player has an equal or better move choice, stop searching this line
                 best_score, best_move = score, move
                 beta = min(beta, score)
 
@@ -194,7 +217,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
             score, _ = self.min_value(state.result(move), depth-1, alpha, beta)
             if score > best_score:
                 if score >= beta:
-                    return score, move  # Minimising player has an equal or better move choice, stop searching this line
+                    return score, move  # Opponent has an equal or better move choice, stop searching this line
                 best_score, best_move = score, move
                 alpha = max(alpha, score)
 
@@ -452,3 +475,4 @@ CustomPlayer = CustomScore_ABPlayer
 CustomPlayer = CustomScore2_ABPlayer
 
 CustomPlayer = CustomScore3_ABPlayer
+#CustomPlayer.SEARCH_DEPTH_LIMIT = 3
