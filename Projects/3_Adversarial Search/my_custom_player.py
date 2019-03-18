@@ -8,8 +8,9 @@ import isolation.isolation as isolation
 
 from sample_players import DataPlayer, MinimaxPlayer
 
-INSTRUMENTATION_ON = False
-SCORE_TIMING_ON = True
+
+INSTRUMENTATION_ON = True
+SCORE_TIMING_ON = False
 
 WIN, LOSS = float("inf"), float("-inf")
 
@@ -148,8 +149,8 @@ class IterativeDeepeningPlayer(DataPlayer):
                 best_score, best_move = self.search(state, depth)
 
                 if INSTRUMENTATION_ON:
-                    self.context[self.METRIC_SCORES][self.ply] += [best_score]
-                    self.context[self.METRIC_MOVES][self.ply] += [best_move]  ##TODO make these two optional
+                    #self.context[self.METRIC_SCORES][self.ply] += [best_score]
+                    #self.context[self.METRIC_MOVES][self.ply] += [best_move]  ##TODO make these two optional
                     self.context[self.METRIC_DEPTH][self.ply] = depth
 
                 self.queue.put(best_move)
