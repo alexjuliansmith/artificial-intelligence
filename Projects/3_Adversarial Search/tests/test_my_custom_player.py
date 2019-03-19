@@ -10,31 +10,7 @@ from sample_players import RandomPlayer
 from my_custom_player import CustomPlayer, IterativeDeepeningPlayer as ID, ID_MinimaxPlayer, AlphaBetaPlayer
 
 
-def summarise_statistics(players):
-    summary = {}
-    from my_custom_player import INSTRUMENTATION_ON
-    if INSTRUMENTATION_ON:
-        for player in players:
-            id, con = player.player_id, player.context
-            sid = {}
-            summary[id] = sid
-            sid["type"] = type(player)
-            sid["moves"] = len(con[ID.METRIC_BRANCHING_FACTOR])
-            if sid["moves"]:
-                sid["first move ply"] = min(con[ID.METRIC_DEPTH])
-                sid["final move ply"] = max(con[ID.METRIC_DEPTH])
 
-                sid["max depth"] = max( (con[ID.METRIC_DEPTH][ply], ply) for ply in con[ID.METRIC_DEPTH])
-                sid["mean depth"] = sum(con[ID.METRIC_DEPTH].values()) / len(con[ID.METRIC_DEPTH])
-
-                sid["max nodes searched"] = max( (con[ID.METRIC_NODES_SEARCHED][ply], ply) for ply in con[ID.METRIC_NODES_SEARCHED])
-                sid["mean nodes searched"] = sum(con[ID.METRIC_NODES_SEARCHED].values()) / len(con[ID.METRIC_NODES_SEARCHED])
-                sid["total nodes searched"] = sum(con[ID.METRIC_NODES_SEARCHED].values())
-
-                sid["mean Branching Factor"] = sum(con[ID.METRIC_BRANCHING_FACTOR].values()) / len(con[ID.METRIC_BRANCHING_FACTOR])
-                sid["max Branching Factor"] = max( (con[ID.METRIC_BRANCHING_FACTOR][ply], ply) for ply in con[ID.METRIC_BRANCHING_FACTOR])
-
-    return summary
 
 
 class BaseCustomPlayerTest(unittest.TestCase):
@@ -57,12 +33,7 @@ class CustomPlayerGetActionTest(BaseCustomPlayerTest):
             Your agent did not call self.queue.put() with a valid action \
             within {} milliseconds from state {}
         """).format(self.time_limit, state))
-        #print(agent.context)
-        summary = summarise_statistics([agent])
-        for id, metrics in summary.items():
-            print (id)
-            for item in metrics.items():
-                print(item)
+
 
     def test_get_action_player1(self):
         """ get_action() calls self.queue.put() before timeout on an empty board """
@@ -97,11 +68,7 @@ class CustomPlayerPlayTest(BaseCustomPlayerTest):
         self.assertTrue(state.terminal_test(), "Your agent did not play until a terminal state.")
 
         print("winner: ", winner)
-        summary = summarise_statistics(players)
-        for id, metrics in summary.items():
-            print (id)
-            for item in metrics.items():
-                print(item)
+
 
 
     def test_custom_player_vs_ab(self):
@@ -118,11 +85,7 @@ class CustomPlayerPlayTest(BaseCustomPlayerTest):
         self.assertTrue(state.terminal_test(), "Your agent did not play until a terminal state.")
 
         print("winner: ", winner)
-        summary = summarise_statistics(players)
-        for id, metrics in summary.items():
-            print (id)
-            for item in metrics.items():
-                print(item)
+
 
 
 
@@ -139,13 +102,8 @@ class CustomPlayerPlayTest(BaseCustomPlayerTest):
 
         self.assertTrue(state.terminal_test(), "Your agent did not play until a terminal state.")
 
-
-        summary = summarise_statistics(players)
         print("winner: ", winner)
-        for id, metrics in summary.items():
-            print (id)
-            for item in metrics.items():
-                print(item)
+
 
 
 

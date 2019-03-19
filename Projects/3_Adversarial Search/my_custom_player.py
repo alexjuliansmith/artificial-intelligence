@@ -8,9 +8,17 @@ import isolation.isolation as isolation
 
 from sample_players import DataPlayer, MinimaxPlayer
 
-
+### INSTRUMENTATION CONSTANTS
 INSTRUMENTATION_ON = True
 SCORE_TIMING_ON = False
+
+METRIC_BRANCHING_FACTOR = 'branching factor'
+METRIC_DEPTH = 'depth completed'
+METRIC_NODES_SEARCHED = "nodes searched"
+METRIC_TERMINAL_NODES_SEARCHED = "terminal nodes searched"
+METRIC_SCORE_ELAPSED_TIME = "score fn elapsed time"
+### INSTRUMENTATION CONSTANTS
+
 
 WIN, LOSS = float("inf"), float("-inf")
 
@@ -22,9 +30,12 @@ MOVE_BIT_SHIFTS = [int(a) for a in isolation.Action if a > 0]
 # Instrumentation Decorators
 #######################################
 def instrument_node(search_node_method):
-    def wrapper(self, *args, **kwargs):
-        self.context[self.METRIC_NODES_SEARCHED][self.ply] += 1
-        return search_node_method(self, *args, **kwargs)
+    def wrapper(self, state, depth, *args, **kwargs):
+        self.context[METRIC_NODES_SEARCHED][self.ply] += 1
+        if depth <=0 or state.terminal_test():
+            self.context[METRIC_TERMINAL_NODES_SEARCHED][self.ply] += 1
+
+        return search_node_method(self, state, depth, *args, **kwargs)
 
     if INSTRUMENTATION_ON:
         return wrapper
@@ -36,7 +47,7 @@ def instrument_score(score_method):
     def wrapper(self, *args, **kwargs):
         start = timer()
         result = score_method(self, *args, **kwargs)
-        self.context[self.METRIC_SCORE_ELAPSED_TIME][self.ply].append(timer() - start)
+        self.context[METRIC_SCORE_ELAPSED_TIME][self.ply].append(timer() - start)
         return result
 
     if INSTRUMENTATION_ON and SCORE_TIMING_ON:
@@ -103,13 +114,6 @@ def location_to_bitboard(location_index: int) -> bitboard:
 
 class IterativeDeepeningPlayer(DataPlayer):
 
-    METRIC_BRANCHING_FACTOR = 'branching factor'
-    METRIC_SCORES = 'scores'
-    METRIC_MOVES = 'moves'
-    METRIC_DEPTH = 'depth'
-    METRIC_NODES_SEARCHED = "nodes searched"
-    METRIC_SCORE_ELAPSED_TIME = "score elapsed time"
-
     SEARCH_DEPTH_LIMIT = None  # Fixed depth to limit iterative deepening, can be overridden in subclass
     score = instrument_score(MinimaxPlayer.score)  # Default heuristic, can be overridden in subclass
 
@@ -118,13 +122,12 @@ class IterativeDeepeningPlayer(DataPlayer):
         if INSTRUMENTATION_ON:
             ## initialise  metrics
             self.context = {}
-            self.context[self.METRIC_BRANCHING_FACTOR] = {}
-            self.context[self.METRIC_DEPTH] = defaultdict(int)
-            self.context[self.METRIC_NODES_SEARCHED] = defaultdict(int)
-            self.context[self.METRIC_SCORE_ELAPSED_TIME] = defaultdict(list)
+            self.context[METRIC_BRANCHING_FACTOR] = {}
+            self.context[METRIC_DEPTH] = defaultdict(int)
+            self.context[METRIC_NODES_SEARCHED] = defaultdict(int)
+            self.context[METRIC_TERMINAL_NODES_SEARCHED] = defaultdict(int)
+            self.context[METRIC_SCORE_ELAPSED_TIME] = defaultdict(list)
 
-            self.context[self.METRIC_SCORES] = defaultdict(list)
-            self.context[self.METRIC_MOVES] = defaultdict(list)
 
     def get_action(self, state):
 
@@ -139,7 +142,7 @@ class IterativeDeepeningPlayer(DataPlayer):
         if state.ply_count >= 2:
             if INSTRUMENTATION_ON:
                 self.ply = state.ply_count # store current ply for use by instrumentation
-                self.context[self.METRIC_BRANCHING_FACTOR][self.ply] = len(state.actions())
+                self.context[METRIC_BRANCHING_FACTOR][self.ply] = len(state.actions())
 
             # Continue iterative deepening until we run out of time, free aquares or reach fixed search depth limit
             free_squares = count_set_bits(state.board)
@@ -149,9 +152,7 @@ class IterativeDeepeningPlayer(DataPlayer):
                 best_score, best_move = self.search(state, depth)
 
                 if INSTRUMENTATION_ON:
-                    #self.context[self.METRIC_SCORES][self.ply] += [best_score]
-                    #self.context[self.METRIC_MOVES][self.ply] += [best_move]  ##TODO make these two optional
-                    self.context[self.METRIC_DEPTH][self.ply] = depth
+                    self.context[METRIC_DEPTH][self.ply] = depth
 
                 self.queue.put(best_move)
                 if best_score in (WIN, LOSS):
@@ -349,7 +350,6 @@ def combo_heuristic(player, state):
         return -score
 
 
-
 ######################################
 # Custom Scores
 #####################################
@@ -416,7 +416,9 @@ class CustomPlayer(AlphaBetaPlayer):
     #score = min_remaining_moves_heuristic
     #score = control_heuristic
     score = combo_heuristic
-
+    #score = dynamic_weighted_combo
+    #score = weighted_combo
+    #pass
 
 #CustomPlayer = AlphaBetaPlayer
 

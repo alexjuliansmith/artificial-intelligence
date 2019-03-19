@@ -25,65 +25,47 @@ class MyTimedQueue:
         self.item = item
 
 
-def summarise_statistics(players):
-    summary = {}
-    from my_custom_player import INSTRUMENTATION_ON
-    if INSTRUMENTATION_ON:
-        for player in players:
-            id, con = player.player_id, player.context
-            sid = {}
-            summary[id] = sid
-            sid["type"] = type(player)
-            sid["moves"] = len(con[ID.METRIC_BRANCHING_FACTOR])
-            if sid["moves"]:
-                sid["first move ply"] = min(con[ID.METRIC_DEPTH])
-                sid["final move ply"] = max(con[ID.METRIC_DEPTH])
 
-                sid["max depth"] = max( (con[ID.METRIC_DEPTH][ply], ply) for ply in con[ID.METRIC_DEPTH])
-                sid["mean depth"] = sum(con[ID.METRIC_DEPTH].values()) / len(con[ID.METRIC_DEPTH])
 
-                sid["max nodes searched"] = max( (con[ID.METRIC_NODES_SEARCHED][ply], ply) for ply in con[ID.METRIC_NODES_SEARCHED])
-                sid["mean nodes searched"] = sum(con[ID.METRIC_NODES_SEARCHED].values()) / len(con[ID.METRIC_NODES_SEARCHED])
-                sid["total nodes searched"] = sum(con[ID.METRIC_NODES_SEARCHED].values())
-
-                sid["mean Branching Factor"] = sum(con[ID.METRIC_BRANCHING_FACTOR].values()) / len(con[ID.METRIC_BRANCHING_FACTOR])
-                sid["max Branching Factor"] = max( (con[ID.METRIC_BRANCHING_FACTOR][ply], ply) for ply in con[ID.METRIC_BRANCHING_FACTOR])
-
-    return summary
-
-stats_to_combine = [ID.METRIC_DEPTH,
-                    ID.METRIC_NODES_SEARCHED,
-                    ID.METRIC_BRANCHING_FACTOR]
+stats_to_combine = [METRIC_DEPTH,
+                    METRIC_NODES_SEARCHED,
+                    METRIC_TERMINAL_NODES_SEARCHED,
+                    METRIC_BRANCHING_FACTOR]
 
 def make_combined_statistics():
     return {
-        key: defaultdict(list) for key in stats_to_combine
+        key: defaultdict(lambda: (0,0) ) for key in stats_to_combine
     }
 
 def add_combined_stats(player, combined_stats):
     for key in stats_to_combine:
         stat = player.context[key]
         for ply, value in stat.items():
-            combined_stats[key][ply].append(value)
-
-mm = ID_MinimaxPlayer(0)
-ab = AlphaBetaPlayer(0)
-cust = CustomPlayer(0)
+            count, total = combined_stats[key][ply]
+            combined_stats[key][ply] = (count + 1, total + value)
 
 
-
-comparees = [mm, ab, cust]
+comparees = [ID_MinimaxPlayer, AlphaBetaPlayer, CustomPlayer]
 buckets = [make_combined_statistics() for _ in range(len(comparees))]
 
-num_matches = 3
+num_matches = 100
 time_limit = 150
 
 
+
+
 for i in range(num_matches):
+    mm = ID_MinimaxPlayer(0)
+    ab = AlphaBetaPlayer(0)
+    cust = CustomPlayer(0)
+    players = [player(0) for player in comparees]
+
     initial_state = game = Isolation()
     game_history = []
+
+    start = timer()
     while not game.terminal_test():
-        for player in comparees:
+        for player in players:
             player.player_id = game.player()
             q = MyTimedQueue(player, time_limit)
             try:
@@ -109,23 +91,32 @@ for i in range(num_matches):
         game = game.result(next_move)
         game_history.append(next_move)
 
+    duration = timer() - start
+    num_moves = len(game_history)
+    print("game over after %s moves and %.2f seconds (%d milliseconds per move)" % (num_moves, duration, duration / num_moves * 1000))
+    #print("game history", game_history)
 
-    print("game over")
-    print("game history", game_history)
 
-    mm.player_id = 'mm'
-    ab.player_id = 'ab'
-    cust.player_id = 'cust'
-
-    for player, bucket in zip(comparees, buckets):
+    for player, bucket in zip(players, buckets):
         add_combined_stats(player, bucket)
 
 
 
 
-#print(summarise_statistics(comparees))
-#for player in comparees:
-#    print(player.player_id, player.context)
-
-for bucket in buckets:
-    print(bucket)
+for id, type in enumerate(comparees):
+    print(type)
+    bucket = buckets[id]
+    for stat, ply_values in bucket.items():
+        #print(stat, ply_values)
+        sum_total = sum(total for count, total in ply_values.values())
+        sum_count = sum(count for count, total in ply_values.values())
+        try:
+            print("{}: Sum Total: {} Total Count: {} Average: {:.2f}".format(stat, sum_total, sum_count, sum_total / sum_count))
+        except ZeroDivisionError:
+            print("**{}: Sum Total: {} Total Count: {}  **".format(stat, sum_total, sum_count))
+        print("ply\tcount\ttotal\t\tmean")
+        for ply, value in ply_values.items():
+            count, total = value
+            print("{}\t{}\t\t{:<8}\t{:.2f}".format(ply, count, total, total / count))
+        print("##############################")
+    print("******************************")
