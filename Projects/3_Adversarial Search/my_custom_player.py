@@ -31,9 +31,9 @@ MOVE_BIT_SHIFTS = [int(a) for a in isolation.Action if a > 0]
 #######################################
 def instrument_node(search_node_method):
     def wrapper(self, state, depth, *args, **kwargs):
-        self.context[METRIC_NODES_SEARCHED][self.ply] += 1
-        if depth <=0 or state.terminal_test():
-            self.context[METRIC_TERMINAL_NODES_SEARCHED][self.ply] += 1
+        self.context[METRIC_NODES_SEARCHED][state.ply_count] += 1
+        if depth <= 0 or state.terminal_test():
+            self.context[METRIC_TERMINAL_NODES_SEARCHED][state.ply_count] += 1
 
         return search_node_method(self, state, depth, *args, **kwargs)
 
@@ -44,10 +44,10 @@ def instrument_node(search_node_method):
 
 
 def instrument_score(score_method):
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self, state, *args, **kwargs):
         start = timer()
-        result = score_method(self, *args, **kwargs)
-        self.context[METRIC_SCORE_ELAPSED_TIME][self.ply].append(timer() - start)
+        result = score_method(self, state, *args, **kwargs)
+        self.context[METRIC_SCORE_ELAPSED_TIME][state.ply_count].append(timer() - start)
         return result
 
     if INSTRUMENTATION_ON and SCORE_TIMING_ON:
@@ -141,8 +141,7 @@ class IterativeDeepeningPlayer(DataPlayer):
         # If this is not player's first move, progressively improve the seed move using an iterative deepening search
         if state.ply_count >= 2:
             if INSTRUMENTATION_ON:
-                self.ply = state.ply_count # store current ply for use by instrumentation
-                self.context[METRIC_BRANCHING_FACTOR][self.ply] = len(state.actions())
+                self.context[METRIC_BRANCHING_FACTOR][state.ply_count] = len(state.actions())
 
             # Continue iterative deepening until we run out of time, free aquares or reach fixed search depth limit
             free_squares = count_set_bits(state.board)
@@ -152,7 +151,7 @@ class IterativeDeepeningPlayer(DataPlayer):
                 best_score, best_move = self.search(state, depth)
 
                 if INSTRUMENTATION_ON:
-                    self.context[METRIC_DEPTH][self.ply] = depth
+                    self.context[METRIC_DEPTH][state.ply_count] = depth
 
                 self.queue.put(best_move)
                 if best_score in (WIN, LOSS):

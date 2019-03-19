@@ -8,6 +8,7 @@ from my_custom_player import IterativeDeepeningPlayer as ID
 from sample_players import RandomPlayer
 
 import queue
+from copy import deepcopy
 
 class MyTimedQueue:
 
@@ -23,6 +24,7 @@ class MyTimedQueue:
             #print("rejecting due to timeout")
             raise StopSearch
         self.item = item
+        self.context = deepcopy(player.context)  ## Freeze this at point of valid queue insertion
 
 
 
@@ -48,8 +50,8 @@ def add_combined_stats(player, combined_stats):
 comparees = [ID_MinimaxPlayer, AlphaBetaPlayer, CustomPlayer]
 buckets = [make_combined_statistics() for _ in range(len(comparees))]
 
-num_matches = 100
-time_limit = 150
+num_matches = 3
+time_limit = 5
 
 
 
@@ -85,7 +87,7 @@ for i in range(num_matches):
                 status = Status.INVALID_MOVE
                 print("Invalid move by player {} Tried: {} When options were: {}\nGame History: {}".format(
                     player, action, game.actions(), game_history))
-
+            player.context = q.context  # Replace player context with the valid one
 
         next_move = random.choice(game.actions())
         game = game.result(next_move)
