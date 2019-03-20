@@ -1,6 +1,6 @@
 
 import random
-from collections import defaultdict, Counter
+from collections import defaultdict
 from timeit import default_timer as timer
 
 from isolation import DebugState, Isolation
@@ -8,32 +8,35 @@ import isolation.isolation as isolation
 
 from sample_players import DataPlayer, MinimaxPlayer
 
-### INSTRUMENTATION CONSTANTS
-INSTRUMENTATION_ON = True
-SCORE_TIMING_ON = False
 
+#######################################
+# Instrumentation
+##############################################################################
+# This section defines metrics and decorators
+# they will be used to instrument the search code to answer project questions
+##############################################################################
+
+# Global Constants that switch on metric gathering
+INSTRUMENTATION_ON = True
+SCORE_TIMING_ON = True  #TODO turn off
+
+# Constants to provide consistent naming of common metrics
 METRIC_BRANCHING_FACTOR = 'branching factor'
 METRIC_DEPTH = 'depth completed'
 METRIC_NODES_SEARCHED = "nodes searched"
 METRIC_TERMINAL_NODES_SEARCHED = "terminal nodes searched"
+METRIC_EVALUATION_NODES_SEARCHED = "evaluation nodes searched"
 METRIC_SCORE_ELAPSED_TIME = "score fn elapsed time"
-### INSTRUMENTATION CONSTANTS
 
 
-WIN, LOSS = float("inf"), float("-inf")
-
-MOVE_BIT_SHIFTS = [int(a) for a in isolation.Action if a > 0]
-
-
-
-#######################################
-# Instrumentation Decorators
-#######################################
+#  Decorators used to gather metrics for a) search nodes and b) score functions respectively
 def instrument_node(search_node_method):
     def wrapper(self, state, depth, *args, **kwargs):
         self.context[METRIC_NODES_SEARCHED][state.ply_count] += 1
-        if depth <= 0 or state.terminal_test():
+        if state.terminal_test():
             self.context[METRIC_TERMINAL_NODES_SEARCHED][state.ply_count] += 1
+        elif depth <= 0:
+            self.context[METRIC_EVALUATION_NODES_SEARCHED][state.ply_count] += 1
 
         return search_node_method(self, state, depth, *args, **kwargs)
 
@@ -56,27 +59,43 @@ def instrument_score(score_method):
         return score_method
 
 
-
-
 ######################################
 # Bitboard functions
-#####################################
+##############################################################################
+# This section defines useful operations on bitboards
+# they will be used by the custom Player and custom heuristics code
+##############################################################################
 
 bitboard = int  # type alias
 
+
+def location_to_bitboard(location_index: int) -> bitboard:
+    '''
+    :param location_index: a board index
+    :return:  bitboard with just the bit at that location set
+    '''
+    if location_index is None:
+        return 0
+    return 1 << location_index
+
+
 def count_set_bits(board: bitboard) -> int:
     '''
-    Kernagham algorithm to count number of set bits in an integer
+    Kernighan’s  algorithm to count number of set bits in an integer.
     Can be used to find the number of flagged squares in a bitboard representation
-    For instance, in the bitboard representation of the game state it will count the number of remaining free squares
-    :param board:
-    :return: number of set bits in integer
+    For instance, given the bitboard from the Isolation game state it will count the number of remaining empty squares
+    :param board: an integer representing a bitboard
+    :return: number of set bits in board
     '''
     bit_count = 0
     while board:
         board &= (board - 1)
         bit_count += 1
     return bit_count
+
+
+#  Convert Action enum into a more useful format for the get_all_knight_moves function
+KNIGHT_MOVE_BITSHIFTS = [int(a) for a in isolation.Action if a > 0]
 
 def get_all_knight_moves(knights: bitboard, valid_squares: bitboard = None) -> bitboard:
     """
@@ -88,29 +107,123 @@ def get_all_knight_moves(knights: bitboard, valid_squares: bitboard = None) -> b
     Bitboard with all squares that at least one knight can move to (doesn't include original knight positions)
     """
     moves = 0
-    for mbs in MOVE_BIT_SHIFTS:
-        moves |= (knights << mbs)
-        moves |= (knights >> mbs)
+    for kmbs in KNIGHT_MOVE_BITSHIFTS:
+        moves |= (knights << kmbs)
+        moves |= (knights >> kmbs)
     if valid_squares is not None:
         moves &= valid_squares
     return moves
 
-def location_to_bitboard(location_index: int) -> bitboard:
-    '''
-    :param location_index: a board index
-    :return:  bitboard with just the bit at that location set
-    '''
-    if location_index is None:
-        return 0
-    return 1 << location_index
+
 
 ######################################
-# Bitboard functions
-#####################################
+# Custom Heuristics
+######################################
+
+
+def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
+    # Initialise bitboards
+    active_wavefront = location_to_bitboard(state.locs[state.player()])
+    inactive_wavefront = location_to_bitboard(state.locs[1 - state.player()])
+    empty_squares = state.board
+    active_controlled_squares = inactive_controlled_squares = 0
+    # Initialise player wavefront counts
+    active_wavefront_count = inactive_wavefront_count = 0
+
+    # While at least one player can still make moves
+    # For each player:
+    # 1. Update the 'wavefront' bitboard by making all moves by all knights on the current wavefront
+    # 2. Mask these potential moves against the empty (valid and still available) squares bitboard
+    # 3. Remove the new wavefront squares from the empty squares bitboard
+    # 4. Add the new wavefront squares to the cumulative player controlled squares bitboard
+    # 5. If there are any valid moves in the new wavefront, increment the player's minimum number of moves
+    while active_wavefront or inactive_wavefront:
+        if active_wavefront:
+            active_wavefront = get_all_knight_moves(active_wavefront)
+            active_wavefront &= empty_squares
+            empty_squares &= ~active_wavefront
+            active_controlled_squares |= active_wavefront
+            active_wavefront_count += (active_wavefront > 0)
+        if inactive_wavefront:
+            inactive_wavefront = get_all_knight_moves(inactive_wavefront)
+            inactive_wavefront &= empty_squares
+            empty_squares &= ~inactive_wavefront
+            inactive_controlled_squares |= inactive_wavefront
+            inactive_wavefront_count += (inactive_wavefront > 0)
+
+
+    num_active_controlled_squares = count_set_bits(active_controlled_squares)
+    num_inactive_controlled_squares = count_set_bits(inactive_controlled_squares)
+
+    # Correctness Tests
+    # assert not active_controlled_squares & inactive_controlled_squares
+    # assert not (active_controlled_squares | inactive_controlled_squares) & empty_squares
+    # assert num_active_controlled_squares + num_inactive_controlled_squares == count_set_bits(state.board) - count_set_bits(empty_squares)
+    # assert active_wavefront_count <= num_active_controlled_squares
+    # assert inactive_wavefront_count <= num_inactive_controlled_squares
+
+    return active_wavefront_count, inactive_wavefront_count, \
+           num_active_controlled_squares, num_inactive_controlled_squares
+
+@instrument_score
+def control_heuristic(player, state):
+    """
+    Heuristic estimation of the position value from player's perspective
+    Returns the difference between:
+      the number of squares the player can reach first (the squares the player 'controls')
+      and the number of squares the player's opponent can reach first (the squares the opponent 'controls')
+    """
+
+    _, _, num_active_controlled_squares, num_inactive_controlled_squares = propagate_move_wavefronts(state)
+    score = num_active_controlled_squares - num_inactive_controlled_squares
+
+    if player.player_id == state.player():
+        return score
+    else:
+        return -score
+
+@instrument_score
+def min_remaining_moves_heuristic(player, state):
+    """
+    Heuristic estimation of the position value from player's perspective
+    'min remaining moves' is a lower bound (i.e. always less than or equal) on the actual number of moves
+    a player can make even against opponent's best play.
+    Returns the difference between:
+      the player's min remaining moves and
+      the opponent's min remaining moves
+    """
+
+    active_min_moves, inactive_min_moves, _, _ = propagate_move_wavefronts(state)
+    score = active_min_moves - inactive_min_moves
+
+    if player.player_id == state.player():
+        return score
+    else:
+        return -score
+
+@instrument_score
+def combo_heuristic(player, state):
+    """
+    Heuristic estimation of the position value from player's perspective
+    Returns
+      the simple sum of the control and min remaining move heuristics
+    """
+
+    active_min_moves, inactive_min_moves, num_active_controlled_squares, num_inactive_controlled_squares = propagate_move_wavefronts(state)
+    score = active_min_moves + num_active_controlled_squares - inactive_min_moves - num_inactive_controlled_squares
+
+    if player.player_id == state.player():
+        return score
+    else:
+        return -score
+
 
 ######################################
 # Custom Players
-#####################################
+######################################
+
+WIN, LOSS = float("inf"), float("-inf")
+
 
 class IterativeDeepeningPlayer(DataPlayer):
 
@@ -126,6 +239,7 @@ class IterativeDeepeningPlayer(DataPlayer):
             self.context[METRIC_DEPTH] = defaultdict(int)
             self.context[METRIC_NODES_SEARCHED] = defaultdict(int)
             self.context[METRIC_TERMINAL_NODES_SEARCHED] = defaultdict(int)
+            self.context[METRIC_EVALUATION_NODES_SEARCHED] = defaultdict(int)
             self.context[METRIC_SCORE_ELAPSED_TIME] = defaultdict(list)
 
 
@@ -179,7 +293,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
         moves = state.actions()
         if not moves:
             return WIN, None  # No available moves, opponent has lost
-        if not get_all_knight_moves(location_to_bitboard(state.locs[self.player_id]), state.board):
+        if get_all_knight_moves(location_to_bitboard(state.locs[self.player_id]), state.board) == 0:
             return LOSS, moves[0]  # Active player has no moves left, any opponent move wins
         if depth <= 0:
             return self.score(state), None  # Leaf search node, evaluate position instead of moving
@@ -203,7 +317,7 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
         moves = state.actions()
         if not moves:
             return LOSS, None  # No available moves, active player has lost
-        if not get_all_knight_moves(location_to_bitboard(state.locs[1 - self.player_id]), state.board):
+        if get_all_knight_moves(location_to_bitboard(state.locs[1 - self.player_id]), state.board) == 0:
             return WIN, moves[0]  # Opponent has no moves left, any active player move wins
         if depth <= 0:
             return self.score(state), None  # Leaf search node, evaluate position instead of moving
@@ -252,8 +366,6 @@ class VerifyEquivalencePlayer(IterativeDeepeningPlayer):
         self.minimaxPlayer = ID_MinimaxPlayer(player_id)
 
     def search(self, state, depth):
-        if INSTRUMENTATION_ON:
-            self.alphabetaPlayer.ply = self.minimaxPlayer.ply = self.ply
         ab_score, ab_move = self.alphabetaPlayer.search(state, depth)
         mm_score, mm_move = self.minimaxPlayer.search(state, depth)
 
@@ -267,91 +379,11 @@ class VerifyEquivalencePlayer(IterativeDeepeningPlayer):
 
         return ab_score, ab_move or mm_move
 
-######################################
-# Custom Players
-#####################################
-
 
 ######################################
-# Custom Scores
-#####################################
-def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
-    # Initialise bitboards
-    active_wavefront = location_to_bitboard(state.locs[state.player()])
-    inactive_wavefront = location_to_bitboard(state.locs[1 - state.player()])
-    empty_squares = state.board
-    active_controlled_squares = inactive_controlled_squares = 0
-    # Initialise player wavefront counts
-    active_wavefront_count = inactive_wavefront_count = 0
-
-    # While at least one player can still make moves
-    # For each player:
-    # 1. Update the 'wavefront' bitboardby making all moves by all knights on the current wavefront
-    # 2. Mask these potential moves against the empty (valid and still available) squares bitboard
-    # 3. Remove the new wavefront squares from the empty squares bitboard
-    # 4. Add the new wavefront squares to the cumulative player controlled squares bitboard
-    # 5. If there are any valid moves in the new wavefront, increment the player's minimum number of moves
-    while active_wavefront or inactive_wavefront:
-        if active_wavefront:
-            active_wavefront = get_all_knight_moves(active_wavefront)
-            active_wavefront &= empty_squares
-            empty_squares &= ~active_wavefront
-            active_controlled_squares |= active_wavefront
-            active_wavefront_count += (active_wavefront > 0)
-        if inactive_wavefront:
-            inactive_wavefront = get_all_knight_moves(inactive_wavefront)
-            inactive_wavefront &= empty_squares
-            empty_squares &= ~inactive_wavefront
-            inactive_controlled_squares |= inactive_wavefront
-            inactive_wavefront_count += (inactive_wavefront > 0)
-
-
-    num_active_controlled_squares = count_set_bits(active_controlled_squares)
-    num_inactive_controlled_squares = count_set_bits(inactive_controlled_squares)
-
-    # Validity Tests
-    # assert not active_controlled_squares & inactive_controlled_squares
-    # assert not (active_controlled_squares | inactive_controlled_squares) & empty_squares
-    # assert num_active_controlled_squares + num_inactive_controlled_squares == count_set_bits(state.board) - count_set_bits(empty_squares)
-    # assert active_wavefront_count <= num_active_controlled_squares
-    # assert inactive_wavefront_count <= num_inactive_controlled_squares
-
-    return active_wavefront_count, inactive_wavefront_count, num_active_controlled_squares, num_inactive_controlled_squares
-
-@instrument_score
-def control_heuristic(player, state):
-    _, _, num_active_controlled_squares, num_inactive_controlled_squares = propagate_move_wavefronts(state)
-    score = num_active_controlled_squares - num_inactive_controlled_squares
-
-    if player.player_id == state.player():
-        return score
-    else:
-        return -score
-
-@instrument_score
-def min_remaining_moves_heuristic(player, state):
-    active_min_moves, inactive_min_moves, _, _ = propagate_move_wavefronts(state)
-    score = active_min_moves - inactive_min_moves
-
-    if player.player_id == state.player():
-        return score
-    else:
-        return -score
-
-@instrument_score
-def combo_heuristic(player, state):
-    active_min_moves, inactive_min_moves, num_active_controlled_squares, num_inactive_controlled_squares = propagate_move_wavefronts(state)
-    score = active_min_moves + num_active_controlled_squares - inactive_min_moves - num_inactive_controlled_squares
-
-    if player.player_id == state.player():
-        return score
-    else:
-        return -score
-
-
+# Putting it all together
 ######################################
-# Custom Scores
-#####################################
+
 '''
 class CustomPlayer(DataPlayer):
 
@@ -398,26 +430,14 @@ class CustomPlayer(DataPlayer):
         self.queue.put(random.choice(state.actions()))
 '''
 
-#CustomPlayer = AlphaBetaPlayer
-#CustomPlayer = ID_MinimaxPlayer
-#CustomPlayer = VerifyEquivalencePlayer
-
-#CustomPlayer.SEARCH_DEPTH_LIMIT = 3
-
-#CustomPlayer.score = min_remaining_moves_heuristic
-#CustomPlayer.score = control_heuristic
-#CustomPlayer.score = combo_heuristic
-
-
-#IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1
+#IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1  Use this to compare players with a fixed-depth search limit
 
 class CustomPlayer(AlphaBetaPlayer):
+    #pass
     #score = min_remaining_moves_heuristic
     #score = control_heuristic
     score = combo_heuristic
-    #score = dynamic_weighted_combo
-    #score = weighted_combo
-    #pass
 
-#CustomPlayer = AlphaBetaPlayer
+
+
 
