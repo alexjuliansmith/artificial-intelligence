@@ -122,11 +122,20 @@ def get_all_knight_moves(knights: bitboard, valid_squares: bitboard = None) -> b
 
 
 def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
+    '''
+    Starting with the provided game state, successively generate each player's next move 'wavefront' in turn.
+    Repeat until there are no more moves to play.
+    :param state: An isolation game
+    :return: quadruple of:
+             number of active player wavefronts generated, number of inactive player wavefronts generated,
+             number of unique active player moves in all wavefronts,
+             number of unique inactive player moves in all wavefronts
+    '''
     # Initialise bitboards
     active_wavefront = location_to_bitboard(state.locs[state.player()])
     inactive_wavefront = location_to_bitboard(state.locs[1 - state.player()])
     empty_squares = state.board
-    active_controlled_squares = inactive_controlled_squares = 0
+    active_cumulative_wavefront = inactive_cumulative_wavefront = 0
     # Initialise player wavefront counts
     active_wavefront_count = inactive_wavefront_count = 0
 
@@ -142,22 +151,22 @@ def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
             active_wavefront = get_all_knight_moves(active_wavefront)
             active_wavefront &= empty_squares
             empty_squares &= ~active_wavefront
-            active_controlled_squares |= active_wavefront
+            active_cumulative_wavefront |= active_wavefront
             active_wavefront_count += (active_wavefront > 0)
         if inactive_wavefront:
             inactive_wavefront = get_all_knight_moves(inactive_wavefront)
             inactive_wavefront &= empty_squares
             empty_squares &= ~inactive_wavefront
-            inactive_controlled_squares |= inactive_wavefront
+            inactive_cumulative_wavefront |= inactive_wavefront
             inactive_wavefront_count += (inactive_wavefront > 0)
 
 
-    num_active_controlled_squares = count_set_bits(active_controlled_squares)
-    num_inactive_controlled_squares = count_set_bits(inactive_controlled_squares)
+    num_active_controlled_squares = count_set_bits(active_cumulative_wavefront)
+    num_inactive_controlled_squares = count_set_bits(inactive_cumulative_wavefront)
 
     # Correctness Tests
-    # assert not active_controlled_squares & inactive_controlled_squares
-    # assert not (active_controlled_squares | inactive_controlled_squares) & empty_squares
+    # assert not active_cumulative_wavefront & inactive_cumulative_wavefront
+    # assert not (active_cumulative_wavefront | inactive_cumulative_wavefront) & empty_squares
     # assert num_active_controlled_squares + num_inactive_controlled_squares == count_set_bits(state.board) - count_set_bits(empty_squares)
     # assert active_wavefront_count <= num_active_controlled_squares
     # assert inactive_wavefront_count <= num_inactive_controlled_squares
@@ -229,7 +238,7 @@ WIN, LOSS = float("inf"), float("-inf")
 class IterativeDeepeningPlayer(DataPlayer):
 
     SEARCH_DEPTH_LIMIT = None  # Fixed depth to limit iterative deepening, can be overridden in subclass
-    score = instrument_score(MinimaxPlayer.score)  # Default heuristic, can be overridden in subclass
+    score = instrument_score(MinimaxPlayer.score)  # Baseline heuristic, can be overridden in subclass
 
     def __init__(self, player_id):
         super().__init__(player_id)
@@ -433,6 +442,8 @@ class CustomPlayer(DataPlayer):
 
 #IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1  Use this to compare players with a fixed-depth search limit
 
+
+
 class CustomPlayer(AlphaBetaPlayer):
     #pass
     #score = min_remaining_moves_heuristic
@@ -440,5 +451,5 @@ class CustomPlayer(AlphaBetaPlayer):
     score = combo_heuristic
 
 
-
+#CustomPlayer = ID_MinimaxPlayer
 
