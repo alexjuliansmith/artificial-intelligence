@@ -15,7 +15,7 @@ class PrintableProblem(InstrumentedProblem):
         return '{:^10d}  {:^10d}  {:^10d}  {:^10d}'.format(
             len(self.problem.actions_list), self.succs, self.goal_tests, self.states)
 
-
+COMPACT_OUTPUT = True
 def run_search(problem, search_function, parameter=None):
     ip = PrintableProblem(problem)
     start = timer()
@@ -24,10 +24,14 @@ def run_search(problem, search_function, parameter=None):
     else:
         node = search_function(ip)
     end = timer()
-    print("\n# Actions   Expansions   Goal Tests   New Nodes")
-    print("{}\n".format(ip))
-    show_solution(node, end - start)
-    print()
+    if COMPACT_OUTPUT:
+        print("{}".format(ip), end='')
+        print("\t{}\t{}".format(len(node.solution()), end - start))
+    else:
+        print("\n# Actions   Expansions   Goal Tests   New Nodes")
+        print("{}\n".format(ip))
+        show_solution(node, end - start)
+        print()
 
 
 def show_solution(node, elapsed_time):

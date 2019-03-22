@@ -7,7 +7,7 @@ from aimacode.search import (breadth_first_search, astar_search,
     recursive_best_first_search)
 from air_cargo_problems import air_cargo_p1, air_cargo_p2, air_cargo_p3, air_cargo_p4
 
-from _utils import run_search
+from _utils import run_search, COMPACT_OUTPUT
 
     ##############################################################################
     #                 YOU DO NOT NEED TO MODIFY CODE IN THIS FILE                #
@@ -69,11 +69,14 @@ def manual():
 def main(p_choices, s_choices):
     problems = [PROBLEMS[i-1] for i in map(int, p_choices)]
     searches = [SEARCHES[i-1] for i in map(int, s_choices)]
-
+    if COMPACT_OUTPUT:
+        print("# Actions   Expansions   Goal Tests   New Nodes PlanLen Elapsed Time")
     for pname, problem_fn in problems:
         for sname, search_fn, heuristic in searches:
             hstring = heuristic if not heuristic else " with {}".format(heuristic)
-            print("\nSolving {} using {}{}...".format(pname, sname, hstring))
+
+            if not COMPACT_OUTPUT:
+                print("\nSolving {} using {}{}...".format(pname, sname, hstring))
 
             problem_instance = problem_fn()
             heuristic_fn = None if not heuristic else getattr(problem_instance, heuristic)

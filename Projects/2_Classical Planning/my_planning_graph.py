@@ -9,7 +9,8 @@ from layers import BaseLayer, BaseLiteralLayer, makeNoOp, make_node, ActionNode
 
 #################################
 
-
+# Return index of literal - if literal has not yet been indexed, first index it and add it to the _indexes map
+# Literal's index will be its bitmap
 def literal_index(literal, _indexes = {}):
     try:
         return _indexes[literal]
@@ -17,6 +18,7 @@ def literal_index(literal, _indexes = {}):
         _indexes[literal] = 1 << len(_indexes)
         return _indexes[literal]
 
+# Fast literal node includes a cache of its own negation to avoid cost of recreating negations.
 class FastLiteralNode(Expr):
     __slots__ = ['__negation']
     def __init__(self, op, *args):
@@ -26,16 +28,13 @@ class FastLiteralNode(Expr):
     def __invert__(self):
         return self.__negation
 
-    # TEMP debugging TODO remove
-    def make_string(self):
-        return self.__repr__() + "/{}".format(self.__negation.__repr__())
 
 @lru_cache(None)
 def make_FastLiteralNode(literal: Expr):
     return FastLiteralNode(literal.op, *literal.args)
 
+# Fast ActionNode stores preconditions and effects as bitmaps rather than Expressions
 class FastActionNode(ActionNode):
-    #todo add all slots __slots__ = ['negated_preconditions', 'negated_effects']
     def __init__(self, symbol, preconditions, negated_preconditions, effects, negated_effects, no_op):
         super().__init__(symbol, preconditions, effects, no_op)
         self.negated_preconditions = negated_preconditions
@@ -49,14 +48,7 @@ class FastActionNode(ActionNode):
             self.effects_bitmap |= literal_index(p)
         for p in self.negated_effects:
             self.negated_effects_bitmap |= literal_index(p)
-        #TODO remove print ("{} P:{} ~P:{} E:{} ~E{}".format(symbol, self.preconditions_bitmap, self.negated_preconditions_bitmap, self.effects_bitmap, self.negated_effects_bitmap))
-'''
-@lru_cache()  TODO: remove
-def make_FastActionNode(action: ActionNode):
-    negated_preconditions = set([~p for p in action.preconditions])
-    negated_effects = set([~e for e in action.effects])
-    return FastActionNode(action.expr, action.preconditions, frozenset(negated_preconditions), action.effects, frozenset(negated_effects), action.no_op)
-'''
+
 @lru_cache(None)
 def make_FastActionNode(action, no_op=False):
     preconditions = frozenset( {make_FastLiteralNode(p) for p in action.precond_pos} |
@@ -72,28 +64,26 @@ def make_FastActionNode(action, no_op=False):
 
 ##################################
 
-make_node = make_FastActionNode
+make_node = make_FastActionNode  # Alias so that test and harness code will use new fast bitmap nodes
 
 ##################################
-@lru_cache()
+@lru_cache(None)
 def _inconsistent_effects(actionA, actionB):
     """ Return True if an effect of one action negates an effect of the other
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        #return actionA.effects & actionB.negated_effects
         return actionA.effects_bitmap & actionB.negated_effects_bitmap
     except AttributeError:
         # This branch necessary to pass some Test_1_InconsistentEffectsMutex unittests which build their own ActionNode
         return any(~effectB in actionA.effects for effectB in actionB.effects)
 
-@lru_cache()
+@lru_cache(None)
 def _interference(actionA: ActionNode, actionB: ActionNode):
     """ Return True if the effects of either action negate the preconditions of the other
     Factored outside class to enable caching across ActionLayer instances
     """
     try:
-        #return actionA.preconditions & actionB.negated_effects or actionB.preconditions & actionA.negated_effects
         return actionA.preconditions_bitmap & actionB.negated_effects_bitmap \
                or actionB.preconditions_bitmap & actionA.negated_effects_bitmap
     except AttributeError:
@@ -107,8 +97,7 @@ class ActionLayer(BaseLayer):
     def __init__(self, actions=[], parent_layer=None, serialize=True, ignore_mutexes=False):
         '''
         TODO
-        1)
-        o Track new actions added in layer (assert action never added twice)
+
         o Recheck existing dynamic mutexes from previous action layer to see if now non mutex and remove (
         eventually replace this with a property that records when something became non-mutex)
         o Only check new actions to add to new mutexes (static and dynamic)
@@ -130,7 +119,7 @@ class ActionLayer(BaseLayer):
         except:
             self._static_mutexes = defaultdict(set)
         #temp monitoring
-        ''' TODO remove - DEBUG lgging
+        ''' TODO remove - DEBUG logging
         self.cache_tries = self.cache_misses = 0
         
         try:
@@ -146,8 +135,7 @@ class ActionLayer(BaseLayer):
         '''
 
     def add(self, action: ActionNode):
-        assert True or isinstance(action, FastActionNode), "Warning: Standard Action Node used in PG" #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard ActionNodes
-        assert action not in self, "Error: Action can only be added once"
+        assert action not in self, "Error: Action {} can only be added once".format(action)
         self._new_actions.add(action)
         super().add(action)
 
@@ -168,10 +156,10 @@ class ActionLayer(BaseLayer):
         # Test actions newly added in this layer against all actions in layer to find any new mutexes
         for actionA in self._new_actions:
             for actionB in self:
-                #self.cache_tries += 1
+                #self.cache_tries += 1  #TODO remove debug code
                 if not actionA in self._static_mutexes[actionB]:
-                    #self.cache_misses += 1
-                    if self._serialize and actionA.no_op == actionB.no_op == False:
+                    #self.cache_misses += 1 #TODO remove debug code
+                    if self._serialize and (actionA.no_op is actionB.no_op is False):
                         self.set_static_mutex(actionA, actionB)
                     elif (self._inconsistent_effects(actionA, actionB)
                           or self._interference(actionA, actionB)):
@@ -229,9 +217,6 @@ class ActionLayer(BaseLayer):
         layers.BaseLayer.parent_layer
         """
         # DONE: implement this function
-        #return any(actionA.preconditions & self.parent_layer._mutexes[precondB] for precondB in actionB.preconditions)
-        #TODO make more performant (old style)
-        #return any(self.parent_layer.is_mutex(precondA, precondB) for precondA in actionA.preconditions for precondB in actionB.preconditions)
         try:
             actionB_precondition_mutexes = 0
             for precondB in actionB.preconditions: #TODO cache this
@@ -242,9 +227,6 @@ class ActionLayer(BaseLayer):
             return any(self.parent_layer.is_mutex(precondA, precondB)
                        for precondA in actionA.preconditions for precondB in actionB.preconditions)
 
-@lru_cache(2048) #TODO remove this - FastLiteralNodes effectively already cache this
-def _negation(literalA, literalB):
-    return literalA == ~literalB
 
 class LiteralLayer(BaseLiteralLayer):
 
@@ -285,13 +267,6 @@ class LiteralLayer(BaseLiteralLayer):
 
 ################  Add Faster implementation
 
-    #TODO remove
-    def index(self, item):
-        try:
-            return self._indexes[item]
-        except KeyError:
-            self._indexes[item] = 1 << len(self._indexes)
-            return self._indexes[item]
 
     def add(self, literal):
         assert True or isinstance(literal, FastLiteralNode), "Warning: Standard Literal {} used in PG".format(literal) #TODO remove, basic 4_CompetingNeedsMutex unittest uses standard Literals for FakeFluents
@@ -478,6 +453,16 @@ class PlanningGraph:
             self._extend()
             level += 1
         raise Exception("Planning graph doesn't contain a possible solution for the set of goals: %s" % self.goal)
+
+    ##############################################################################
+    # REGRESSION SEARCH
+    ##############################################################################
+
+    ##############################################################################
+    # //REGRESSION SEARCH
+    ##############################################################################
+
+
 
     ##############################################################################
     #                     DO NOT MODIFY CODE BELOW THIS LINE                     #
