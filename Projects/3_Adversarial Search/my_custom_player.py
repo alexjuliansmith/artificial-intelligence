@@ -1,4 +1,4 @@
-
+﻿
 import random
 from collections import defaultdict
 from timeit import default_timer as timer
@@ -17,8 +17,8 @@ from sample_players import DataPlayer, MinimaxPlayer
 ##############################################################################
 
 # Global Constants that switch on metric gathering
-INSTRUMENTATION_ON = True
-SCORE_TIMING_ON = True  #TODO turn off
+INSTRUMENTATION_ON = False
+SCORE_TIMING_ON = False
 
 # Constants to provide consistent naming of common metrics
 METRIC_BRANCHING_FACTOR = 'branching factor'
@@ -122,11 +122,19 @@ def get_all_knight_moves(knights: bitboard, valid_squares: bitboard = None) -> b
 
 
 def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
+    '''
+    Successively generate each player's next wavefront.
+    (A player’s ith wavefront represents all the squares a player can first reach in i moves and that his opponent
+    cannot prevent him reaching)
+    :param state: Current game state
+    :return: the number of squares in each player's cumulative wavefront
+             the number of non-empty wavefronts generated for each player
+    '''
     # Initialise bitboards
     active_wavefront = location_to_bitboard(state.locs[state.player()])
     inactive_wavefront = location_to_bitboard(state.locs[1 - state.player()])
     empty_squares = state.board
-    active_controlled_squares = inactive_controlled_squares = 0
+    active_cumulative_wavefront = inactive_cumulative_wavefront = 0
     # Initialise player wavefront counts
     active_wavefront_count = inactive_wavefront_count = 0
 
@@ -142,22 +150,22 @@ def propagate_move_wavefronts(state: Isolation) -> (int, int, int, int):
             active_wavefront = get_all_knight_moves(active_wavefront)
             active_wavefront &= empty_squares
             empty_squares &= ~active_wavefront
-            active_controlled_squares |= active_wavefront
+            active_cumulative_wavefront |= active_wavefront
             active_wavefront_count += (active_wavefront > 0)
         if inactive_wavefront:
             inactive_wavefront = get_all_knight_moves(inactive_wavefront)
             inactive_wavefront &= empty_squares
             empty_squares &= ~inactive_wavefront
-            inactive_controlled_squares |= inactive_wavefront
+            inactive_cumulative_wavefront |= inactive_wavefront
             inactive_wavefront_count += (inactive_wavefront > 0)
 
 
-    num_active_controlled_squares = count_set_bits(active_controlled_squares)
-    num_inactive_controlled_squares = count_set_bits(inactive_controlled_squares)
+    num_active_controlled_squares = count_set_bits(active_cumulative_wavefront)
+    num_inactive_controlled_squares = count_set_bits(inactive_cumulative_wavefront)
 
     # Correctness Tests
-    # assert not active_controlled_squares & inactive_controlled_squares
-    # assert not (active_controlled_squares | inactive_controlled_squares) & empty_squares
+    # assert not active_cumulative_wavefront & inactive_cumulative_wavefront
+    # assert not (active_cumulative_wavefront | inactive_cumulative_wavefront) & empty_squares
     # assert num_active_controlled_squares + num_inactive_controlled_squares == count_set_bits(state.board) - count_set_bits(empty_squares)
     # assert active_wavefront_count <= num_active_controlled_squares
     # assert inactive_wavefront_count <= num_inactive_controlled_squares
@@ -186,8 +194,8 @@ def control_heuristic(player, state):
 def min_remaining_moves_heuristic(player, state):
     """
     Heuristic estimation of the position value from player's perspective
-    'min remaining moves' is a lower bound (i.e. always less than or equal) on the actual number of moves
-    a player can make even against opponent's best play.
+    'min remaining moves' is a lower bound (i.e. always less than or equal) on the minimum number of moves
+    a player can make against play by his opponent.
     Returns the difference between:
       the player's min remaining moves and
       the opponent's min remaining moves
@@ -226,6 +234,10 @@ WIN, LOSS = float("inf"), float("-inf")
 
 
 class IterativeDeepeningPlayer(DataPlayer):
+    '''
+    Abstract Base Class to implement iterative deepening and provide the get_action() interface.
+    Concrete subclasses implement search()
+    '''
 
     SEARCH_DEPTH_LIMIT = None  # Fixed depth to limit iterative deepening, can be overridden in subclass
     score = instrument_score(MinimaxPlayer.score)  # Default heuristic, can be overridden in subclass
@@ -283,6 +295,9 @@ class IterativeDeepeningPlayer(DataPlayer):
         raise NotImplementedError
 
 class AlphaBetaPlayer(IterativeDeepeningPlayer):
+    '''
+    Basic implementation of Minimax with Alphabeta Pruning search algorithm
+    '''
 
     def search(self, state, depth):
         return self.max_value(state, depth, LOSS, WIN)
@@ -335,6 +350,9 @@ class AlphaBetaPlayer(IterativeDeepeningPlayer):
         return best_score, best_move
 
 class ID_MinimaxPlayer(IterativeDeepeningPlayer):
+    '''
+    Copy of provided sample MiniMax player retrofitted to work as an IterativeDeepeningPlayer and be instrumentable.
+    '''
 
     def search(self, state, depth):
         move_scores = [(self.min_value(state.result(action), depth - 1), action) for action in state.actions()]
@@ -359,6 +377,13 @@ class ID_MinimaxPlayer(IterativeDeepeningPlayer):
         return value
 
 class VerifyEquivalencePlayer(IterativeDeepeningPlayer):
+    '''
+    Testing and Debugging class.
+    Correct Alphabeta pruning should not alter evaluation of a game position.
+    Alphabeta search should always return a move with the same score (not necessarily the same move) as
+    vanilla Minimax on the same game state.
+    This class is used in unit tests to verify correct implementation of Alphabeta.
+    '''
 
     def __init__(self, player_id):
         super().__init__(player_id)
@@ -369,20 +394,24 @@ class VerifyEquivalencePlayer(IterativeDeepeningPlayer):
         ab_score, ab_move = self.alphabetaPlayer.search(state, depth)
         mm_score, mm_move = self.minimaxPlayer.search(state, depth)
 
-        if ab_score != mm_score:
-            print("AB Score {} Move {}\nMM Score {} Move {}".format(ab_score, ab_move, mm_score, mm_move))
-            debug = DebugState.from_state(state)
-            print("Active Player: ", debug.player_symbols[self.player_id])
-            print("Ply: ", state.ply_count)
-            print("Search Depth: ", depth)
-            print(debug)
+        if INSTRUMENTATION_ON:
+            if ab_score != mm_score:
+                print("AB Score {} Move {}\nMM Score {} Move {}".format(ab_score, ab_move, mm_score, mm_move))
+                debug = DebugState.from_state(state)
+                print("Active Player: ", debug.player_symbols[self.player_id])
+                print("Ply: ", state.ply_count)
+                print("Search Depth: ", depth)
+                print(debug)
+        else:
+            assert ab_score == mm_score, "AB Score {} Move {}\nMM Score {} Move {}".format(ab_score, ab_move, mm_score, mm_move)
 
         return ab_score, ab_move or mm_move
 
 
-######################################
-# Putting it all together
-######################################
+#####################################################################
+# Putting it all togaether
+
+#####################################################################
 
 '''
 class CustomPlayer(DataPlayer):
@@ -430,13 +459,17 @@ class CustomPlayer(DataPlayer):
         self.queue.put(random.choice(state.actions()))
 '''
 
-#IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1  Use this to compare players with a fixed-depth search limit
+
+# (Commented lines show Custom Player / Heuristic Configurations used in the Project Report)
+#CustomPlayer = ID_MinimaxPlayer
+#IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1
 
 class CustomPlayer(AlphaBetaPlayer):
-    #pass
+    #pass  # Baseline heuristic
     #score = min_remaining_moves_heuristic
     #score = control_heuristic
     score = combo_heuristic
+
 
 
 
