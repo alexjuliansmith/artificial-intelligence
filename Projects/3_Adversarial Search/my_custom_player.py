@@ -226,6 +226,7 @@ def combo_heuristic(player, state):
         return -score
 
 
+
 ######################################
 # Custom Players
 ######################################
@@ -240,7 +241,7 @@ class IterativeDeepeningPlayer(DataPlayer):
     '''
 
     SEARCH_DEPTH_LIMIT = None  # Fixed depth to limit iterative deepening, can be overridden in subclass
-    score = instrument_score(MinimaxPlayer.score)  # Default heuristic, can be overridden in subclass
+    score = instrument_score(MinimaxPlayer.score)  # Baseline heuristic, can be overridden in subclass
 
     def __init__(self, player_id):
         super().__init__(player_id)
@@ -464,6 +465,8 @@ class CustomPlayer(DataPlayer):
 #CustomPlayer = ID_MinimaxPlayer
 #IterativeDeepeningPlayer.SEARCH_DEPTH_LIMIT = 1
 
+
+
 class CustomPlayer(AlphaBetaPlayer):
     #pass  # Baseline heuristic
     #score = min_remaining_moves_heuristic
@@ -471,6 +474,6 @@ class CustomPlayer(AlphaBetaPlayer):
     score = combo_heuristic
 
 
-
+#CustomPlayer = ID_MinimaxPlayer
 
 
