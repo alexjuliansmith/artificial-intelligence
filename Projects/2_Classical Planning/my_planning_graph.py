@@ -123,7 +123,7 @@ class PlanningGraph:
         self.literal_layers = [layer]
         self.action_layers = []
 
-    # TODO: document
+
     @lru_cache()
     def _level_costs(self):
         '''
